@@ -12,8 +12,6 @@ const (
 
 	minSize = 64
 	maxSize = 1 << 30
-
-	defaultNormalization = 2
 )
 
 // Chunker implements the FastCDC content defined chunking algorithm.
