@@ -15,7 +15,7 @@ var defaultOpts = Options{
 }
 
 var defaultData = randBytes(4321, 7291)
-var resetData   = randBytes(1234, 1729)
+var resetData = randBytes(1234, 1729)
 
 // Chunks generated with defaultOpts from defaultData
 var defaultChunks []Chunk = []Chunk{
@@ -66,6 +66,8 @@ var resetChunks []Chunk = []Chunk{
 }
 
 func TestChunking(t *testing.T) {
+	t.Parallel()
+
 	chunker, err := NewChunker(bytes.NewReader(defaultData), defaultOpts)
 	assertNoError(t, err)
 
@@ -116,6 +118,8 @@ func TestChunking(t *testing.T) {
 }
 
 func TestChunkingRandom(t *testing.T) {
+	t.Parallel()
+
 	data := randBytes(1e6, 63)
 	chunker, err := NewChunker(bytes.NewReader(data), defaultOpts)
 	assertNoError(t, err)
@@ -149,6 +153,8 @@ func TestChunkingRandom(t *testing.T) {
 }
 
 func TestMinSize(t *testing.T) {
+	t.Parallel()
+
 	// Test with data smaller than min chunk size
 	data := randBytes(10, 51)
 	opts := defaultOpts
@@ -172,6 +178,8 @@ func TestMinSize(t *testing.T) {
 }
 
 func TestOptionsValidation(t *testing.T) {
+	t.Parallel()
+
 	avg := 1024 * 64
 	testOpts := []Options{
 		// AverageSize not set
@@ -205,22 +213,22 @@ type bencSpec struct {
 }
 
 var bSizes = []bencSpec{
-	{   1 << 10,   "1k"},
-	{   4 << 10,   "4k"},
-	{  16 << 10,  "16k"},
-	{  32 << 10,  "32k"},
-	{  64 << 10,  "64k"},
-	{ 128 << 10, "128k"},
-	{ 256 << 10, "256k"},
-	{ 512 << 10, "512k"},
-	{   1 << 20,   "1M"},
-	{   4 << 20,   "4M"},
-	{  16 << 20,  "16M"},
-	{  32 << 20,  "32M"},
-	{  64 << 20,  "64M"},
-	{ 128 << 20, "128M"},
-	{ 512 << 20, "512M"},
-	{   1 << 30,   "1G"},
+	{1 << 10, "1k"},
+	{4 << 10, "4k"},
+	{16 << 10, "16k"},
+	{32 << 10, "32k"},
+	{64 << 10, "64k"},
+	{128 << 10, "128k"},
+	{256 << 10, "256k"},
+	{512 << 10, "512k"},
+	{1 << 20, "1M"},
+	{4 << 20, "4M"},
+	{16 << 20, "16M"},
+	{32 << 20, "32M"},
+	{64 << 20, "64M"},
+	{128 << 20, "128M"},
+	{512 << 20, "512M"},
+	{1 << 30, "1G"},
 }
 
 func BenchmarkFastCDCSize(b *testing.B) {
