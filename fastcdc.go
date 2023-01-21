@@ -33,6 +33,8 @@ type Chunker struct {
 	end    int
 	offset int
 	eof    bool
+
+	table [256]uint64
 }
 
 // Options configures the options for the Chunker.
@@ -107,10 +109,6 @@ func NewChunker(rd io.Reader, opts Options) (*Chunker, error) {
 		return nil, err
 	}
 
-	for i := 0; i < len(table); i++ {
-		table[i] = table[i] ^ opts.Seed
-	}
-
 	normalization := opts.Normalization
 	if opts.DisableNormalization {
 		normalization = 0
@@ -129,6 +127,10 @@ func NewChunker(rd io.Reader, opts Options) (*Chunker, error) {
 		buf:      make([]byte, opts.BufSize),
 		cursor:   opts.BufSize,
 		end:      opts.BufSize,
+	}
+
+	for i, v := range globalTable {
+		chunker.table[i] = v ^ opts.Seed
 	}
 
 	return chunker, nil
@@ -161,7 +163,7 @@ func (c *Chunker) fillBuffer() error {
 	// Fill the rest of the buffer
 	m, err := io.ReadFull(c.rd, c.buf[n:])
 	if err == io.EOF || err == io.ErrUnexpectedEOF {
-		c.end = n+m
+		c.end = n + m
 		c.eof = true
 	} else if err != nil {
 		return err
@@ -196,7 +198,7 @@ func (c *Chunker) Next() (Chunk, error) {
 
 func (c *Chunker) nextChunk(data []byte) (int, uint64) {
 	fp := uint64(0)
-	n  := len(data)
+	n := len(data)
 
 	if n <= c.minSize {
 		return n, fp
@@ -212,14 +214,14 @@ func (c *Chunker) nextChunk(data []byte) (int, uint64) {
 	}
 
 	for ; i < m; i++ {
-		fp = (fp << 1) + table[data[i]]
+		fp = (fp << 1) + c.table[data[i]]
 		if (fp & c.maskS) == 0 {
 			return i + 1, fp
 		}
 	}
 
 	for ; i < n; i++ {
-		fp = (fp << 1) + table[data[i]]
+		fp = (fp << 1) + c.table[data[i]]
 		if (fp & c.maskL) == 0 {
 			return i + 1, fp
 		}
@@ -253,9 +255,8 @@ func (opts Options) validate() error {
 	return nil
 }
 
-
 // 256 random uint64s for the rolling hash function
-var table [256]uint64 = [256]uint64{
+var globalTable [256]uint64 = [256]uint64{
 	0xe80e8d55032474b3, 0x11b25b61f5924e15, 0x03aa5bd82a9eb669, 0xc45a153ef107a38c,
 	0xeac874b86f0f57b9, 0xa5ccedec95ec79c7, 0xe15a3320ad42ac0a, 0x5ed3583fa63cec15,
 	0xcd497bf624a4451d, 0xf9ade5b059683605, 0x773940c03fb11ca1, 0xa36b16e4a6ae15b2,
