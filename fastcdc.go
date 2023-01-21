@@ -34,7 +34,7 @@ type Chunker struct {
 	offset int
 	eof    bool
 
-	table [256]uint64
+	table *[256]uint64
 }
 
 // Options configures the options for the Chunker.
@@ -127,10 +127,15 @@ func NewChunker(rd io.Reader, opts Options) (*Chunker, error) {
 		buf:      make([]byte, opts.BufSize),
 		cursor:   opts.BufSize,
 		end:      opts.BufSize,
+		table:    &globalTable,
 	}
 
-	for i, v := range globalTable {
-		chunker.table[i] = v ^ opts.Seed
+	if opts.Seed != 0 {
+		newTable := globalTable
+		for i := range newTable {
+			newTable[i] ^= opts.Seed
+		}
+		chunker.table = &newTable
 	}
 
 	return chunker, nil
