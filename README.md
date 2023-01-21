@@ -61,12 +61,25 @@ fastcdc -csv -file random.txt
 
 ## Performance
 
-FastCDC-Go is fast. Chunking speed on an Intel i5 7200U is >1GiB/s. Compared to [`restic/chunker`](https://github.com/restic/chunker), another CDC library for Go, it's about 2.9 times faster.
-
-Benchmark ([code](https://gist.github.com/eadanfahey/ce2ba2733028e2b3b62a479ba2b9f62a)):
+FastCDC-Go is fast. Chunking speed on an i5-10210U is >1GiB/s:
 ```
-BenchmarkRestic-4     23384482467 ns/op	 448.41 MB/s	 8943320 B/op   15 allocs/op
-BenchmarkFastCDC-4    8080957045 ns/op	1297.59 MB/s	16777336 B/op    3 allocs/op
+name                speed
+FastCDCSize/1k-8    19.7GB/s ± 2%
+FastCDCSize/4k-8    53.3GB/s ± 2%
+FastCDCSize/16k-8   43.1GB/s ±11%
+FastCDCSize/32k-8   39.6GB/s ± 6%
+FastCDCSize/64k-8   39.4GB/s ± 6%
+FastCDCSize/128k-8  31.9GB/s ± 8%
+FastCDCSize/256k-8  22.6GB/s ± 3%
+FastCDCSize/512k-8  2.22GB/s ±13%
+FastCDCSize/1M-8    1.51GB/s ± 3%
+FastCDCSize/4M-8    1.23GB/s ± 4%
+FastCDCSize/16M-8   1.32GB/s ±10%
+FastCDCSize/32M-8   1.30GB/s ± 5%
+FastCDCSize/64M-8   1.34GB/s ± 0%
+FastCDCSize/128M-8  1.30GB/s ± 5%
+FastCDCSize/512M-8  1.30GB/s ± 6%
+FastCDCSize/1G-8    1.34GB/s ± 8%
 ```
 
 ## Normalization
