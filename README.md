@@ -73,15 +73,15 @@ BenchmarkFastCDC-4    8080957045 ns/op	1297.59 MB/s	16777336 B/op    3 allocs/op
 
 A key feature of FastCDC is chunk size normalization. Normalization helps to improve the distribution of chunk sizes, increasing the number of chunks close to the target average size and reducing the number of chunks clipped by the maximum chunk size, as compared to the [Rabin-based](https://en.wikipedia.org/wiki/Rabin_fingerprint) chunking algorithm used in `restic/chunker`.
 
-The histograms below show the chunk size distribution for `fastcdc-go` and `restic/chunker` on 1GiB of random data, each with average chunk size 1MiB, minimum chunk size 256 KiB and maximum chunk size 4MiB. The normalization level for `fastcdc-go` is set to 2.
+The histograms below show the chunk size distribution for `fastcdc-go` and `restic/chunker` on 1GiB of random data, each with an average chunk size of 1MiB, a minimum chunk size of 256 KiB and a maximum chunk size of 4MiB. The normalization level for `fastcdc-go` is set to 2.
 
 ![](./img/fastcdcgo_norm2_dist.png) ![](./img/restic_dist.png)
 
-Compared the `restic/chunker`, the distribution of `fastcdc-go` is less skewed (standard deviation 345KiB vs. 964KiB).
+Compared to the `restic/chunker`, the distribution of `fastcdc-go` is less skewed (standard deviation 345KiB vs. 964KiB).
 
 ## License
 
-FastCDC-Go is licensed unser the Apache 2.0 License. See [LICENSE](./LICENSE) for details.
+FastCDC-Go is licensed under the Apache 2.0 License. See [LICENSE](./LICENSE) for details.
 
 ## References
 
