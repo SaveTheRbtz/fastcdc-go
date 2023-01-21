@@ -22,6 +22,8 @@ var fileName = flag.String("file", "", "input file (required)")
 var avgSize = flag.Int("avg", 2*miB, "average chunk size")
 var minSize = flag.Int("min", 0, "minimum chunk size. (default avg / 4)")
 var maxSize = flag.Int("max", 0, "maximum chunk size (default avg * 4)")
+var normalization = flag.Int("normalization", 0, "normalization level (default 2)")
+var disableNormalization = flag.Bool("no-normalization", false, "disable normalization (default false)")
 
 func Restic(r io.Reader) ([]int, error) {
 	minChunkSize := *minSize
@@ -36,7 +38,7 @@ func Restic(r io.Reader) ([]int, error) {
 	cnkr := chunker.NewWithBoundaries(r, chunker.Pol(0x3DA3358B4DC173), uint(minChunkSize), uint(maxChunkSize))
 	cnkr.SetAverageBits(int(math.Log2(float64(*avgSize))))
 
-	buf := make([]byte, 8*miB)
+	buf := make([]byte, maxChunkSize)
 	chunkSizes := make([]int, 0, 1000)
 	for {
 		c, err := cnkr.Next(buf)
@@ -56,6 +58,9 @@ func FastCDC(r io.Reader) ([]int, error) {
 		MinSize:     *minSize,
 		MaxSize:     *maxSize,
 		AverageSize: *avgSize,
+
+		Normalization:        *normalization,
+		DisableNormalization: *disableNormalization,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("error creating chunker: %w", err)
@@ -81,6 +86,9 @@ func OrigFastCDC(r io.Reader) ([]int, error) {
 		MinSize:     *minSize,
 		MaxSize:     *maxSize,
 		AverageSize: *avgSize,
+
+		Normalization:        *normalization,
+		DisableNormalization: *disableNormalization,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("error creating chunker: %w", err)
