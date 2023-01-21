@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/jotfs/fastcdc-go"
+	"github.com/SaveTheRbtz/fastcdc-go"
 )
 
 const kiB = 1024
