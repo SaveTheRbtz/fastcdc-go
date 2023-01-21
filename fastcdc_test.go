@@ -199,31 +199,6 @@ func TestOptionsValidation(t *testing.T) {
 	}
 }
 
-func BenchmarkFastCDC(b *testing.B) {
-	// total of 10GiB of data to chunk
-	n := 10
-	benchData := randBytes(100*1024*1024, 345)
-	r := newLoopReader(benchData, n)
-
-	b.ResetTimer()
-	cnkr, err := NewChunker(r, Options{
-		AverageSize: 1 * miB,
-	})
-	if err != nil {
-		b.Fatal(err)
-	}
-	for {
-		_, err := cnkr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			b.Fatal(err)
-		}
-	}
-	b.SetBytes(int64(n * len(benchData)))
-}
-
 type bencSpec struct {
 	size int
 	name string
@@ -294,29 +269,6 @@ func benchmarkFastCDCSize(b *testing.B, size int) {
 		}
 	}
 	b.ReportMetric(float64(nchks)/float64(b.N), "chunks")
-}
-
-// loopReader implements io.Reader, looping over a provided buffer a given number of
-// times.
-type loopReader struct {
-	n    int
-	data []byte
-	r    *bytes.Reader
-	i    int
-}
-
-func newLoopReader(data []byte, n int) *loopReader {
-	return &loopReader{n, data, bytes.NewReader(data), 0}
-}
-
-func (lr *loopReader) Read(p []byte) (int, error) {
-	n, err := lr.r.Read(p)
-	if err == io.EOF && lr.i < lr.n {
-		lr.i++
-		lr.r.Reset(lr.data)
-		return n, nil
-	}
-	return n, err
 }
 
 func assertNoError(t *testing.T, err error) {
