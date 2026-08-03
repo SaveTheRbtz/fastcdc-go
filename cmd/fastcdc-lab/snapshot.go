@@ -18,20 +18,37 @@ type snapshot struct {
 	eachFile func(func(path string, reader io.Reader, size int64) error) error
 }
 
-func directorySnapshot(root string) snapshot {
+func directorySnapshot(root, excludedFile string) snapshot {
 	return snapshot{
 		label: "dir:" + root,
 		eachFile: func(visit func(string, io.Reader, int64) error) error {
-			info, err := os.Stat(root)
+			rootPath, err := filepath.Abs(root)
+			if err != nil {
+				return fmt.Errorf("resolve directory %q: %w", root, err)
+			}
+			info, err := os.Lstat(rootPath)
 			if err != nil {
 				return fmt.Errorf("stat directory %q: %w", root, err)
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("snapshot directory %q must not be a symlink", root)
 			}
 			if !info.IsDir() {
 				return fmt.Errorf("snapshot %q is not a directory", root)
 			}
-			return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+			excludedPath := ""
+			if excludedFile != "" {
+				excludedPath, err = filepath.Abs(excludedFile)
+				if err != nil {
+					return fmt.Errorf("resolve excluded file: %w", err)
+				}
+			}
+			return filepath.WalkDir(rootPath, func(path string, entry fs.DirEntry, walkErr error) error {
 				if walkErr != nil {
 					return walkErr
+				}
+				if path == excludedPath {
+					return nil
 				}
 				if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
 					return nil
@@ -43,7 +60,7 @@ func directorySnapshot(root string) snapshot {
 				if !entryInfo.Mode().IsRegular() {
 					return nil
 				}
-				relative, err := filepath.Rel(root, path)
+				relative, err := filepath.Rel(rootPath, path)
 				if err != nil {
 					return err
 				}

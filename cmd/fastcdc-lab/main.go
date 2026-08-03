@@ -36,7 +36,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		if _, err := io.WriteString(stderr, usageText); err != nil {
 			return err
 		}
-		return flag.ErrHelp
+		return fmt.Errorf("missing command")
 	}
 
 	switch args[0] {

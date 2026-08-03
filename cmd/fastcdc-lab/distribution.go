@@ -8,7 +8,6 @@ import (
 	"io"
 	"math"
 	"math/bits"
-	"os"
 	"strconv"
 
 	fastcdc "github.com/SaveTheRbtz/fastcdc-go"
@@ -29,8 +28,6 @@ func runDistribution(args []string, stdout, stderr io.Writer) error {
 	inputSizeText := fs.String("bytes", "256MiB", "number of deterministic input bytes")
 	binWidthText := fs.String("bin", "", "histogram bin width (default: average/16)")
 	seed := fs.Uint64("seed", 1, "SplitMix64 input seed (decimal or 0x-prefixed)")
-	csvPath := fs.String("csv", "fastcdc-distribution.csv", "output CSV path")
-	svgPath := fs.String("svg", "fastcdc-distribution.svg", "output SVG path")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -60,10 +57,6 @@ func runDistribution(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("bin produces %d rows; choose a width of at least %s", binCount,
 			formatBytes((int64(resolved.maximum-resolved.minimum)+4095)/4096))
 	}
-	if *csvPath == "" || *svgPath == "" {
-		return fmt.Errorf("csv and svg paths must not be empty")
-	}
-
 	chunker, err := fastcdc.New(resolved.config)
 	if err != nil {
 		return err
@@ -73,27 +66,17 @@ func runDistribution(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if completeChunks == 0 {
+		return fmt.Errorf("input produced no complete chunks; increase bytes")
+	}
 	for i := range bins {
 		if completeChunks != 0 {
 			bins[i].observed = float64(bins[i].count) / float64(completeChunks)
 		}
 		bins[i].analytical = analyticalCDF(bins[i].upper, resolved) - analyticalCDF(bins[i].lower, resolved)
 	}
-	if err := writeDistributionCSV(*csvPath, resolved, bins); err != nil {
-		return err
-	}
-	title := fmt.Sprintf("FastCDC distribution: avg %s, normalization %s",
-		formatBytes(int64(resolved.average)), chunkFlags.normalization)
-	if err := writeDistributionSVG(*svgPath, title, bins); err != nil {
-		return err
-	}
-	observedMean := float64(completeBytes) / float64(max64(completeChunks, 1))
-	if _, err := fmt.Fprintf(stdout,
-		"input=%s seed=%d complete_chunks=%d complete_bytes=%d final_tail_bytes=%d\n"+
-			"observed_mean=%.2f analytical_mean=%.2f model=independent-uniform-hash\n"+
-			"csv=%s svg=%s\n",
-		formatBytes(inputSize), *seed, completeChunks, completeBytes, finalTail,
-		observedMean, analyticalMean(resolved), *csvPath, *svgPath); err != nil {
+	if err := writeDistributionCSV(stdout, resolved, inputSize, *seed,
+		completeChunks, completeBytes, finalTail, bins); err != nil {
 		return fmt.Errorf("write distribution report: %w", err)
 	}
 	return nil
@@ -191,40 +174,42 @@ func geometricSum(q, oneMinusQ float64, count int) float64 {
 	return q * (1 - math.Pow(q, float64(count))) / oneMinusQ
 }
 
-func writeDistributionCSV(path string, config resolvedConfig, bins []distributionBin) error {
-	file, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("create CSV: %w", err)
-	}
-	writer := csv.NewWriter(file)
+func writeDistributionCSV(output io.Writer, config resolvedConfig, inputSize int64, seed uint64,
+	completeChunks, completeBytes int64, finalTail int, bins []distributionBin,
+) error {
+	writer := csv.NewWriter(output)
 	writeErr := writer.Write([]string{
-		"minimum", "average", "maximum", "normalization",
+		"minimum_bytes", "average_bytes", "maximum_bytes", "normalization",
+		"input_bytes", "seed", "complete_chunks", "complete_bytes", "final_tail_bytes",
+		"observed_mean_bytes", "analytical_mean_bytes", "analytical_model",
 		"lower_inclusive", "upper_exclusive", "observed_count",
 		"observed_probability", "analytical_probability",
 	})
+	observedMean := float64(completeBytes) / float64(max64(completeChunks, 1))
+	common := []string{
+		strconv.Itoa(config.minimum), strconv.Itoa(config.average), strconv.Itoa(config.maximum),
+		strconv.Itoa(config.normalization), strconv.FormatInt(inputSize, 10), strconv.FormatUint(seed, 10),
+		strconv.FormatInt(completeChunks, 10), strconv.FormatInt(completeBytes, 10), strconv.Itoa(finalTail),
+		strconv.FormatFloat(observedMean, 'g', 12, 64),
+		strconv.FormatFloat(analyticalMean(config), 'g', 12, 64), "independent-uniform-hash",
+	}
 	for _, bin := range bins {
 		if writeErr != nil {
 			break
 		}
-		writeErr = writer.Write([]string{
-			strconv.Itoa(config.minimum), strconv.Itoa(config.average),
-			strconv.Itoa(config.maximum), strconv.Itoa(config.normalization),
+		row := append([]string{}, common...)
+		row = append(row,
 			strconv.Itoa(bin.lower), strconv.Itoa(bin.upper), strconv.FormatInt(bin.count, 10),
 			strconv.FormatFloat(bin.observed, 'g', 12, 64),
 			strconv.FormatFloat(bin.analytical, 'g', 12, 64),
-		})
+		)
+		writeErr = writer.Write(row)
 	}
 	writer.Flush()
 	if writeErr == nil {
 		writeErr = writer.Error()
 	}
-	if closeErr := file.Close(); writeErr == nil {
-		writeErr = closeErr
-	}
-	if writeErr != nil {
-		return fmt.Errorf("write CSV: %w", writeErr)
-	}
-	return nil
+	return writeErr
 }
 
 func max64(a, b int64) int64 {

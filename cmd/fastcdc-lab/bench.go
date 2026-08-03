@@ -2,13 +2,14 @@ package main
 
 import (
 	"crypto/sha256"
-	"encoding/binary"
+	"encoding/csv"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"time"
 
 	fastcdc "github.com/SaveTheRbtz/fastcdc-go"
@@ -18,7 +19,7 @@ type benchResult struct {
 	duration time.Duration
 	bytes    int64
 	chunks   int64
-	digest   [sha256.Size]byte
+	checksum uint64
 }
 
 func runBench(args []string, stdout, stderr io.Writer) error {
@@ -28,7 +29,6 @@ func runBench(args []string, stdout, stderr io.Writer) error {
 	inputSizeText := fs.String("bytes", "1GiB", "number of synthetic bytes per measured round")
 	corpusSizeText := fs.String("corpus", "64MiB", "deterministic corpus repeated to make the input")
 	filePath := fs.String("file", "", "read the entire regular file instead of synthetic input")
-	verify := fs.Bool("verify", true, "verify a file's reconstructed SHA-256 before timing")
 	rounds := fs.Int("rounds", 3, "number of measured rounds")
 	seed := fs.Uint64("seed", 1, "SplitMix64 corpus seed (decimal or 0x-prefixed)")
 	if err := fs.Parse(args); err != nil {
@@ -48,8 +48,9 @@ func runBench(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-
 	var inputSize int64
+	var inputDescription, inputSHA256 string
+	var verifiedDigest [sha256.Size]byte
 	var measuredRound func() (benchResult, error)
 	if *filePath != "" {
 		forbidden := make(map[string]bool)
@@ -70,20 +71,13 @@ func runBench(args []string, stdout, stderr io.Writer) error {
 		if inputSize <= 0 {
 			return fmt.Errorf("benchmark file is empty")
 		}
-		if _, err := fmt.Fprintf(stdout, "input_file=%s bytes=%d rounds=%d average=%s min=%s max=%s normalization=%s\n",
-			*filePath, inputSize, *rounds, formatBytes(int64(resolved.average)),
-			formatBytes(int64(resolved.minimum)), formatBytes(int64(resolved.maximum)), chunkFlags.normalization); err != nil {
-			return fmt.Errorf("write benchmark report: %w", err)
+		inputDescription = *filePath
+		digest, err := verifyFileReconstruction(chunker, *filePath, inputSize)
+		if err != nil {
+			return err
 		}
-		if *verify {
-			digest, err := verifyFileReconstruction(chunker, *filePath, inputSize)
-			if err != nil {
-				return err
-			}
-			if _, err := fmt.Fprintf(stdout, "verified_bytes=%d verified_sha256=%x verification=untimed\n", inputSize, digest); err != nil {
-				return fmt.Errorf("write benchmark report: %w", err)
-			}
-		}
+		verifiedDigest = digest
+		inputSHA256 = fmt.Sprintf("%x", digest)
 		measuredRound = func() (benchResult, error) {
 			return benchmarkFileRound(chunker, *filePath, inputSize)
 		}
@@ -100,16 +94,14 @@ func runBench(args []string, stdout, stderr io.Writer) error {
 		if corpusSize > int64(maxInt()) {
 			return fmt.Errorf("corpus is too large for this platform")
 		}
+		if corpusSize > inputSize {
+			return fmt.Errorf("corpus must not exceed input bytes")
+		}
 		corpus := make([]byte, int(corpusSize))
 		if _, err := io.ReadFull(newSplitMixReader(*seed), corpus); err != nil {
 			return fmt.Errorf("generate corpus: %w", err)
 		}
-		if _, err := fmt.Fprintf(stdout, "input=%s corpus=%s rounds=%d seed=%d average=%s min=%s max=%s normalization=%s\n",
-			formatBytes(inputSize), formatBytes(corpusSize), *rounds, *seed,
-			formatBytes(int64(resolved.average)), formatBytes(int64(resolved.minimum)),
-			formatBytes(int64(resolved.maximum)), chunkFlags.normalization); err != nil {
-			return fmt.Errorf("write benchmark report: %w", err)
-		}
+		inputDescription = fmt.Sprintf("splitmix64:seed=%d,corpus_bytes=%d", *seed, corpusSize)
 		measuredRound = func() (benchResult, error) {
 			return benchmarkRound(chunker, corpus, inputSize)
 		}
@@ -122,14 +114,18 @@ func runBench(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 		results[i] = result
-		if _, err := fmt.Fprintf(stdout, "round=%d bytes=%d chunks=%d seconds=%.6f MiB/s=%.2f boundary_digest=%x\n",
-			i+1, result.bytes, result.chunks, result.duration.Seconds(),
-			float64(result.bytes)/float64(miB)/result.duration.Seconds(), result.digest); err != nil {
-			return fmt.Errorf("write benchmark report: %w", err)
+	}
+	if *filePath != "" {
+		digest, size, err := hashFile(*filePath)
+		if err != nil {
+			return err
+		}
+		if size != inputSize || digest != verifiedDigest {
+			return fmt.Errorf("benchmark file changed during timed rounds")
 		}
 	}
 	for i := 1; i < len(results); i++ {
-		if results[i].bytes != results[0].bytes || results[i].chunks != results[0].chunks || results[i].digest != results[0].digest {
+		if results[i].bytes != results[0].bytes || results[i].chunks != results[0].chunks || results[i].checksum != results[0].checksum {
 			return fmt.Errorf("non-deterministic result between rounds 1 and %d", i+1)
 		}
 	}
@@ -142,9 +138,46 @@ func runBench(args []string, stdout, stderr io.Writer) error {
 	if len(durations)%2 == 0 {
 		median = (durations[len(durations)/2-1] + median) / 2
 	}
-	if _, err := fmt.Fprintf(stdout, "median_seconds=%.6f median_MiB/s=%.2f\n",
-		median.Seconds(), float64(inputSize)/float64(miB)/median.Seconds()); err != nil {
-		return fmt.Errorf("write benchmark report: %w", err)
+	w := csv.NewWriter(stdout)
+	writeErr := w.Write([]string{
+		"record", "minimum_bytes", "average_bytes", "maximum_bytes", "normalization",
+		"input", "input_bytes", "input_sha256", "round", "chunks", "seconds",
+		"mib_per_second", "boundary_checksum",
+	})
+	common := []string{
+		strconv.Itoa(resolved.minimum), strconv.Itoa(resolved.average),
+		strconv.Itoa(resolved.maximum), strconv.Itoa(resolved.normalization), inputDescription,
+		strconv.FormatInt(inputSize, 10), inputSHA256,
+	}
+	for index, result := range results {
+		if writeErr != nil {
+			break
+		}
+		row := append([]string{"round"}, common...)
+		row = append(row,
+			strconv.Itoa(index+1), strconv.FormatInt(result.chunks, 10),
+			strconv.FormatFloat(result.duration.Seconds(), 'f', 9, 64),
+			strconv.FormatFloat(float64(result.bytes)/float64(miB)/result.duration.Seconds(), 'f', 6, 64),
+			fmt.Sprintf("%016x", result.checksum),
+		)
+		writeErr = w.Write(row)
+	}
+	if writeErr == nil {
+		row := append([]string{"median"}, common...)
+		row = append(row,
+			"", strconv.FormatInt(results[0].chunks, 10),
+			strconv.FormatFloat(median.Seconds(), 'f', 9, 64),
+			strconv.FormatFloat(float64(inputSize)/float64(miB)/median.Seconds(), 'f', 6, 64),
+			fmt.Sprintf("%016x", results[0].checksum),
+		)
+		writeErr = w.Write(row)
+	}
+	w.Flush()
+	if writeErr == nil {
+		writeErr = w.Error()
+	}
+	if writeErr != nil {
+		return fmt.Errorf("write benchmark report: %w", writeErr)
 	}
 	return nil
 }
@@ -172,9 +205,7 @@ func benchmarkFileRound(chunker *fastcdc.Chunker, path string, inputSize int64) 
 
 func benchmarkReader(chunker *fastcdc.Chunker, source io.Reader, inputSize int64) (benchResult, error) {
 	reader := chunker.NewReader(source)
-	hash := sha256.New()
-	var encodedLength [8]byte
-	result := benchResult{}
+	result := benchResult{checksum: 14695981039346656037}
 	start := time.Now()
 	for {
 		chunk, err := reader.Next()
@@ -186,11 +217,10 @@ func benchmarkReader(chunker *fastcdc.Chunker, source io.Reader, inputSize int64
 		}
 		result.bytes += int64(len(chunk))
 		result.chunks++
-		binary.LittleEndian.PutUint64(encodedLength[:], uint64(len(chunk)))
-		_, _ = hash.Write(encodedLength[:])
+		result.checksum ^= uint64(len(chunk))
+		result.checksum *= 1099511628211
 	}
 	result.duration = time.Since(start)
-	copy(result.digest[:], hash.Sum(nil))
 	if result.bytes != inputSize {
 		return benchResult{}, fmt.Errorf("processed %d bytes, want %d", result.bytes, inputSize)
 	}

@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"strconv"
-	"text/tabwriter"
 
 	fastcdc "github.com/SaveTheRbtz/fastcdc-go"
 )
@@ -96,10 +95,8 @@ func runDedup(args []string, stdout, stderr io.Writer) error {
 	repository := fs.String("repo", "", "Git repository used by every -rev snapshot")
 	var revisions stringList
 	fs.Var(&revisions, "rev", "Git revision to analyze; repeat in comparison order")
-	csvPath := fs.String("csv", "", "optional machine-readable summary CSV")
 	oracle := fs.Bool("oracle", false, "compute the exact adjacent-snapshot target-partition oracle")
 	oracleMaxFileText := fs.String("oracle-max-file", "1MiB", "largest source and target file included in the oracle")
-	oracleTempDir := fs.String("oracle-temp-dir", "", "directory for the oracle content spool (default: system temp)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -113,16 +110,12 @@ func runDedup(args []string, stdout, stderr io.Writer) error {
 	if len(revisions) == 0 && *repository != "" {
 		return fmt.Errorf("at least one rev is required when repo is used")
 	}
-
-	snapshots := make([]snapshot, 0, fs.NArg()+len(revisions))
-	for _, path := range fs.Args() {
-		snapshots = append(snapshots, directorySnapshot(path))
-	}
-	for _, revision := range revisions {
-		snapshots = append(snapshots, gitRevisionSnapshot(*repository, revision))
-	}
-	if len(snapshots) == 0 {
+	snapshotCount := fs.NArg() + len(revisions)
+	if snapshotCount == 0 {
 		return fmt.Errorf("provide at least one directory or -rev")
+	}
+	if *oracle && snapshotCount != 2 {
+		return fmt.Errorf("oracle requires exactly two snapshots")
 	}
 
 	oracleMaxFile, err := parseSize(*oracleMaxFileText)
@@ -145,7 +138,7 @@ func runDedup(args []string, stdout, stderr io.Writer) error {
 		oracleMaxFile: oracleMaxFile,
 	}
 	if analyzer.oracleEnabled {
-		store, err := os.CreateTemp(*oracleTempDir, "fastcdc-lab-oracle-*.spool")
+		store, err := os.CreateTemp("", "fastcdc-lab-oracle-*.spool")
 		if err != nil {
 			return fmt.Errorf("create oracle spool: %w", err)
 		}
@@ -154,6 +147,17 @@ func runDedup(args []string, stdout, stderr io.Writer) error {
 			_ = store.Close()
 			_ = os.Remove(store.Name())
 		}()
+	}
+	excludedFile := ""
+	if analyzer.oracleStore != nil {
+		excludedFile = analyzer.oracleStore.Name()
+	}
+	snapshots := make([]snapshot, 0, snapshotCount)
+	for _, path := range fs.Args() {
+		snapshots = append(snapshots, directorySnapshot(path, excludedFile))
+	}
+	for _, revision := range revisions {
+		snapshots = append(snapshots, gitRevisionSnapshot(*repository, revision))
 	}
 
 	metrics := make([]dedupMetrics, 0, len(snapshots))
@@ -164,16 +168,8 @@ func runDedup(args []string, stdout, stderr io.Writer) error {
 		}
 		metrics = append(metrics, metric)
 	}
-	if err := writeDedupReport(stdout, analyzer, metrics, resolved); err != nil {
+	if err := writeDedupCSV(stdout, analyzer, resolved, metrics); err != nil {
 		return fmt.Errorf("write dedup report: %w", err)
-	}
-	if *csvPath != "" {
-		if err := writeDedupCSV(*csvPath, analyzer, resolved, metrics); err != nil {
-			return err
-		}
-		if _, err := fmt.Fprintf(stdout, "csv=%s\n", *csvPath); err != nil {
-			return fmt.Errorf("write dedup report: %w", err)
-		}
 	}
 	return nil
 }
@@ -233,10 +229,15 @@ func (a *dedupAnalyzer) analyzeFile(index int, path string, content []byte, curr
 		}
 	}
 	chunks := make(map[chunkKey]struct{})
-	fileChunks := make([]analyzedChunk, 0, len(content)/8192+1)
+	var fileChunks []analyzedChunk
+	if a.oracleEnabled {
+		fileChunks = make([]analyzedChunk, 0, len(content)/8192+1)
+	}
 	for _, chunk := range a.chunker.Chunks(content) {
 		key := chunkKey{digest: sha256.Sum256(chunk), size: uint32(len(chunk))}
-		fileChunks = append(fileChunks, analyzedChunk{data: chunk})
+		if a.oracleEnabled {
+			fileChunks = append(fileChunks, analyzedChunk{data: chunk})
+		}
 		chunks[key] = struct{}{}
 		metric.chunks++
 		if first, exists := a.globalChunks[key]; exists {
@@ -259,7 +260,7 @@ func (a *dedupAnalyzer) analyzeFile(index int, path string, content []byte, curr
 	}
 
 	stored := priorFile{chunks: chunks, whole: wholeKey}
-	if a.oracleEnabled && int64(len(content)) <= a.oracleMaxFile {
+	if a.oracleEnabled && index == 0 && int64(len(content)) <= a.oracleMaxFile {
 		offset, err := a.oracleStore.Seek(0, io.SeekEnd)
 		if err != nil {
 			return fmt.Errorf("seek oracle spool: %w", err)
@@ -309,80 +310,11 @@ func (a *dedupAnalyzer) analyzeFile(index int, path string, content []byte, curr
 	return nil
 }
 
-func writeDedupReport(output io.Writer, analyzer *dedupAnalyzer, metrics []dedupMetrics, config resolvedConfig) error {
-	var report []byte
-	report = fmt.Appendf(report, "algorithm\tFastCDC 2020; average=%s min=%s max=%s normalization=%d\n",
-		formatBytes(int64(config.average)), formatBytes(int64(config.minimum)),
-		formatBytes(int64(config.maximum)), config.normalization)
-	report = append(report, "identity\tSHA-256 digest plus length (hash collisions are not byte-compared)\n"...)
-	for _, metric := range metrics {
-		report = fmt.Appendf(report, "snapshot\t%d\t%s\n", metric.index, metric.label)
-		report = fmt.Appendf(report, "  files\t%d\n", metric.files)
-		report = fmt.Appendf(report, "  logical_bytes\t%d\n", metric.logicalBytes)
-		report = fmt.Appendf(report, "  chunks\t%d\n", metric.chunks)
-		report = fmt.Appendf(report, "  earlier_snapshot_chunk_reuse_bytes\t%d\t%.2f%% of snapshot\n",
-			metric.earlierChunkReuseBytes, percent(metric.earlierChunkReuseBytes, metric.logicalBytes))
-		report = fmt.Appendf(report, "  newly_stored_unique_chunk_bytes\t%d\n", metric.newUniqueChunkBytes)
-		report = fmt.Appendf(report, "  earlier_snapshot_exact_file_reuse_bytes\t%d\t%.2f%% of snapshot\n",
-			metric.earlierFileReuseBytes, percent(metric.earlierFileReuseBytes, metric.logicalBytes))
-		report = fmt.Appendf(report, "  newly_stored_unique_exact_file_bytes\t%d\n", metric.newUniqueFileBytes)
-		if metric.index > 0 {
-			report = fmt.Appendf(report, "  unchanged_same_path_files_bytes\t%d\t%d\n",
-				metric.unchangedSamePathFiles, metric.unchangedSamePathBytes)
-			report = fmt.Appendf(report, "  changed_same_path_files_bytes\t%d\t%d\n",
-				metric.changedSamePathFiles, metric.changedSamePathBytes)
-			report = fmt.Appendf(report, "  new_path_files_bytes\t%d\t%d\n",
-				metric.newPathFiles, metric.newPathBytes)
-			report = fmt.Appendf(report, "  adjacent_same_path_CDC_reuse_bytes\t%d\t%.2f%% of snapshot\n",
-				metric.samePathCDCReuse, percent(metric.samePathCDCReuse, metric.logicalBytes))
-			report = fmt.Appendf(report, "  changed_same_path_CDC_reuse_bytes\t%d\t%.2f%% of changed same-path bytes\n",
-				metric.changedPathCDCReuse, percent(metric.changedPathCDCReuse, metric.changedSamePathBytes))
-		}
-		if analyzer.oracleEnabled && metric.index > 0 {
-			report = fmt.Appendf(report, "  oracle_eligible_changed_same_path_target_bytes\t%d\n", metric.oracleEligibleChangedBytes)
-			report = fmt.Appendf(report, "  oracle_actual_CDC_reuse_bytes\t%d\t%.2f%% of eligible target\n",
-				metric.oracleActualCDCReuseBytes, percent(metric.oracleActualCDCReuseBytes, metric.oracleEligibleChangedBytes))
-			report = fmt.Appendf(report, "  target_partition_oracle_reuse_bytes\t%d\t%.2f%% of eligible target\n",
-				metric.oracleReusableBytes, percent(metric.oracleReusableBytes, metric.oracleEligibleChangedBytes))
-			report = fmt.Appendf(report, "  source_boundary_loss_bytes\t%d\n",
-				metric.oracleReusableBytes-metric.oracleActualCDCReuseBytes)
-			report = fmt.Appendf(report, "  oracle_skipped_files_bytes\t%d\t%d\n",
-				metric.oracleSkippedFiles, metric.oracleSkippedBytes)
-		}
-	}
-	report = append(report, "all_snapshots\n"...)
-	report = fmt.Appendf(report, "  files\t%d\n", analyzer.totalFiles)
-	report = fmt.Appendf(report, "  logical_bytes\t%d\n", analyzer.totalLogical)
-	report = fmt.Appendf(report, "  chunks\t%d\n", analyzer.totalChunks)
-	report = fmt.Appendf(report, "  unique_chunk_bytes\t%d\t%.2f%% storage saving\n",
-		analyzer.totalUniqueChunkBytes, saving(analyzer.totalUniqueChunkBytes, analyzer.totalLogical))
-	report = fmt.Appendf(report, "  unique_exact_file_bytes\t%d\t%.2f%% storage saving\n",
-		analyzer.totalUniqueFileBytes, saving(analyzer.totalUniqueFileBytes, analyzer.totalLogical))
-	if analyzer.oracleEnabled {
-		report = fmt.Appendf(report, "oracle_scope\tadjacent snapshots, changed same-path content, fixed target FastCDC partition; files > %s excluded\n",
-			formatBytes(analyzer.oracleMaxFile))
-		report = append(report, "oracle_note\tExact byte comparison via suffix array; this is not a global theoretical optimum.\n"...)
-	}
-
-	tabs := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
-	written, err := tabs.Write(report)
-	if err != nil {
-		return err
-	}
-	if written != len(report) {
-		return io.ErrShortWrite
-	}
-	return tabs.Flush()
-}
-
-func writeDedupCSV(path string, analyzer *dedupAnalyzer, config resolvedConfig, metrics []dedupMetrics) error {
-	file, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("create dedup CSV: %w", err)
-	}
-	w := csv.NewWriter(file)
+func writeDedupCSV(output io.Writer, analyzer *dedupAnalyzer, config resolvedConfig, metrics []dedupMetrics) error {
+	w := csv.NewWriter(output)
 	writeErr := w.Write([]string{
-		"minimum", "average", "maximum", "normalization", "oracle_max_file",
+		"algorithm", "minimum_bytes", "average_bytes", "maximum_bytes", "normalization",
+		"identity_digest", "identity_includes_size", "identity_byte_compared", "oracle_max_file_bytes",
 		"snapshot_index", "snapshot", "files", "logical_bytes", "chunks",
 		"earlier_snapshot_chunk_reuse_bytes", "new_unique_chunk_bytes",
 		"earlier_snapshot_exact_file_reuse_bytes", "new_unique_exact_file_bytes",
@@ -392,6 +324,8 @@ func writeDedupCSV(path string, analyzer *dedupAnalyzer, config resolvedConfig, 
 		"oracle_eligible_changed_same_path_target_bytes",
 		"oracle_actual_cdc_reuse_bytes", "target_partition_oracle_reuse_bytes",
 		"source_boundary_loss_bytes", "oracle_skipped_files", "oracle_skipped_bytes",
+		"all_snapshots_files", "all_snapshots_logical_bytes", "all_snapshots_chunks",
+		"unique_chunk_bytes", "unique_exact_file_bytes",
 	})
 	for _, metric := range metrics {
 		if writeErr != nil {
@@ -402,8 +336,9 @@ func writeDedupCSV(path string, analyzer *dedupAnalyzer, config resolvedConfig, 
 			oracleMaxFile = strconv.FormatInt(analyzer.oracleMaxFile, 10)
 		}
 		writeErr = w.Write([]string{
-			strconv.Itoa(config.minimum), strconv.Itoa(config.average), strconv.Itoa(config.maximum),
-			strconv.Itoa(config.normalization), oracleMaxFile,
+			"FastCDC 2020", strconv.Itoa(config.minimum), strconv.Itoa(config.average),
+			strconv.Itoa(config.maximum), strconv.Itoa(config.normalization),
+			"SHA-256", "true", "false", oracleMaxFile,
 			strconv.Itoa(metric.index), metric.label, strconv.FormatInt(metric.files, 10),
 			strconv.FormatInt(metric.logicalBytes, 10), strconv.FormatInt(metric.chunks, 10),
 			strconv.FormatInt(metric.earlierChunkReuseBytes, 10), strconv.FormatInt(metric.newUniqueChunkBytes, 10),
@@ -416,31 +351,14 @@ func writeDedupCSV(path string, analyzer *dedupAnalyzer, config resolvedConfig, 
 			strconv.FormatInt(metric.oracleActualCDCReuseBytes, 10), strconv.FormatInt(metric.oracleReusableBytes, 10),
 			strconv.FormatInt(metric.oracleReusableBytes-metric.oracleActualCDCReuseBytes, 10),
 			strconv.FormatInt(metric.oracleSkippedFiles, 10), strconv.FormatInt(metric.oracleSkippedBytes, 10),
+			strconv.FormatInt(analyzer.totalFiles, 10), strconv.FormatInt(analyzer.totalLogical, 10),
+			strconv.FormatInt(analyzer.totalChunks, 10), strconv.FormatInt(analyzer.totalUniqueChunkBytes, 10),
+			strconv.FormatInt(analyzer.totalUniqueFileBytes, 10),
 		})
 	}
 	w.Flush()
 	if writeErr == nil {
 		writeErr = w.Error()
 	}
-	if closeErr := file.Close(); writeErr == nil {
-		writeErr = closeErr
-	}
-	if writeErr != nil {
-		return fmt.Errorf("write dedup CSV: %w", writeErr)
-	}
-	return nil
-}
-
-func percent(part, whole int64) float64 {
-	if whole == 0 {
-		return 0
-	}
-	return 100 * float64(part) / float64(whole)
-}
-
-func saving(stored, logical int64) float64 {
-	if logical == 0 {
-		return 0
-	}
-	return 100 * (1 - float64(stored)/float64(logical))
+	return writeErr
 }

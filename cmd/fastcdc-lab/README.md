@@ -1,74 +1,80 @@
 # fastcdc-lab
 
 `fastcdc-lab` contains reproducible experiments for the FastCDC 2020
-implementation. It is not an end-user file chunking command. Inputs are
-deterministic where possible, large runs are opt-in, and CSV/SVG output has no
-timestamps so that results remain useful in source-control diffs.
+implementation. It is separate from the end-user `fastcdc` command. Every
+subcommand writes CSV to standard output; redirect it to keep a result.
 
-All sizes accept bytes or `KiB`, `MiB`, and `GiB` suffixes. The default chunk
+Sizes accept bytes or `KiB`, `MiB`, and `GiB` suffixes. The default chunk
 format is average 8 KiB, minimum 2 KiB, maximum 32 KiB, normalization level 1.
 Every subcommand also accepts `-average`, `-min`, `-max`, and
 `-normalization`.
 
 ## Throughput
 
-Run three streaming passes over 1 GiB of deterministic data:
+Run three race-instrumented passes over 1 GiB of deterministic data:
 
 ```sh
-go run ./cmd/fastcdc-lab bench \
-  -bytes 1GiB -corpus 64MiB -rounds 3 -seed 1
+go run -race ./cmd/fastcdc-lab bench \
+  -bytes 1GiB -corpus 64MiB -rounds 3 -seed 1 \
+  > results/benchmark.csv
 ```
 
 The corpus is generated before timing and repeated without allocating the full
-logical input. The reported boundary digest covers the chunk lengths and must
-match across rounds. The timing includes copying from the in-memory source and
-the `Reader` API; it is not a storage or hashing benchmark.
+logical input. Timing includes the `Reader`, source copying, and a small
+rolling checksum of chunk lengths. The checksum and chunk count must match
+across rounds. Results produced with `-race` measure the instrumented build,
+not production throughput.
 
-Benchmark an existing file, reopening it before every measured round:
+File mode reopens the file for each measured round:
 
 ```sh
-go run ./cmd/fastcdc-lab bench \
-  -file /path/to/large.pack -rounds 3
+go run -race ./cmd/fastcdc-lab bench \
+  -file /path/to/large.pack -rounds 3 \
+  > results/file-benchmark.csv
 ```
 
-File mode reports the exact byte count. By default it first performs two
-untimed reads: one direct SHA-256 pass and one pass that hashes the bytes
-returned by FastCDC. The hashes and reconstructed byte counts must agree before
-timing starts. Use `-verify=false` only when that separate correctness pass has
-already succeeded. Timed rounds still compare their chunk-boundary digest.
+Before timing, file mode compares a direct SHA-256 pass with a second pass over
+the bytes returned by FastCDC. It verifies the file digest again after the
+timed rounds. The measured rounds therefore describe a warm-cache workload.
 
 ## Chunk-size distribution
 
-Generate a histogram, an independent-uniform-hash model, and a simple SVG:
+Write observed histogram bins and the independent-uniform-hash model:
 
 ```sh
-go run ./cmd/fastcdc-lab distribution \
+go run -race ./cmd/fastcdc-lab distribution \
   -bytes 1GiB -seed 1 \
-  -csv results/distribution.csv \
-  -svg results/distribution.svg
+  > results/distribution.csv
 ```
 
-The final EOF-shortened chunk is excluded from the histogram. A final chunk
-whose length is exactly the configured maximum is retained because it is a
-full forced chunk. The analytical curve is the two-hazard model implied by the
-small and large FastCDC masks; it is a model, not an assertion that successive
-Gear hashes are statistically independent.
+The final EOF-shortened chunk is excluded. A final chunk exactly `MaxSize`
+bytes long is retained because it is a complete forced chunk. The analytical
+columns describe the two-hazard model implied by the small and large masks;
+they do not assume that successive Gear hashes are actually independent.
+
+Plotting is optional and stays outside the Go command:
+
+```sh
+gnuplot -c cmd/fastcdc-lab/distribution.gnuplot \
+  results/distribution.csv results/distribution.svg
+```
 
 ## Deduplication
 
 Analyze directories in positional order:
 
 ```sh
-go run ./cmd/fastcdc-lab dedup -csv dedup.csv snapshot-v1 snapshot-v2
+go run -race ./cmd/fastcdc-lab dedup snapshot-v1 snapshot-v2 \
+  > results/dedup.csv
 ```
 
 Analyze Git revisions without checking them out:
 
 ```sh
-go run ./cmd/fastcdc-lab dedup \
-  -repo /home/rbtz/porn/linux \
+go run -race ./cmd/fastcdc-lab dedup \
+  -repo /path/to/linux \
   -rev v7.0 -rev v7.1 \
-  -csv linux-dedup.csv
+  > results/linux-dedup.csv
 ```
 
 Git trees are read with `git ls-tree` and one `git cat-file --batch` process.
@@ -76,52 +82,44 @@ Only regular blobs are included. Directory symlinks and special files are
 skipped. Each regular file is chunked independently, so boundaries cannot
 cross file edges.
 
-The report keeps these metrics separate:
+The CSV keeps these values separate:
 
-- `earlier_snapshot_chunk_reuse_bytes` is an operational, global-history
-  metric. It counts target bytes in chunks seen in any earlier snapshot.
-  Repetitions first seen within the same snapshot do not inflate this number.
-- `unique_chunk_bytes` is the storage needed by one copy of every FastCDC
-  chunk across all snapshots.
-- `earlier_snapshot_exact_file_reuse_bytes` and `unique_exact_file_bytes` are a
-  whole-file baseline. They do not credit partial-file matches.
-- Content identity is SHA-256 plus length. The command does not byte-compare
-  digest collisions.
+- `earlier_snapshot_chunk_reuse_bytes` counts target bytes in chunks seen in
+  any earlier snapshot. Same-snapshot repetitions do not inflate it.
+- `unique_chunk_bytes` is the payload needed to store one copy of each chunk
+  across all snapshots.
+- `earlier_snapshot_exact_file_reuse_bytes` and
+  `unique_exact_file_bytes` provide a whole-file baseline.
+- `changed_same_path_cdc_reuse_bytes` excludes unchanged files, which would
+  otherwise hide boundary behavior on edited content.
 
-For every snapshot after the first, the report also separates target files
-into unchanged same-path content, changed same-path content, and new paths.
-`changed_same_path_CDC_reuse_bytes` excludes unchanged files, whose often large
-reuse rate would otherwise hide boundary behavior on edited content.
+Chunk and file identities use SHA-256 plus length. Aggregate dedup metrics do
+not byte-compare hash collisions. Payload savings exclude recipes, indexes,
+metadata, and compression.
 
-An optional, deliberately limited oracle can show how much reuse source chunk
-boundaries leave on the table for the target's existing FastCDC partition:
+## Target-partition oracle
+
+For exactly two snapshots, `-oracle` compares normal CDC reuse with an exact
+same-path test that keeps the target partition but ignores source boundaries:
 
 ```sh
-go run ./cmd/fastcdc-lab dedup \
-  -repo /home/rbtz/porn/linux -rev v7.0 -rev v7.1 \
-  -oracle -oracle-max-file 1MiB
+go run -race ./cmd/fastcdc-lab dedup \
+  -repo /path/to/linux -rev v7.0 -rev v7.1 \
+  -oracle -oracle-max-file 1MiB \
+  > results/linux-oracle.csv
 ```
 
-For every FastCDC chunk in an eligible changed same-path target file, a suffix
-array asks whether the exact bytes occur anywhere in that file in the
-immediately preceding snapshot. `oracle_actual_CDC_reuse_bytes` requires a
-matching source chunk boundary; `target_partition_oracle_reuse_bytes` ignores
-source boundaries. Both use the same `oracle_eligible_changed_same_path_target_bytes`
-denominator. Their difference is the measured source-boundary loss. Unchanged
-files and new paths are reported separately and do not enter this comparison.
-Files larger than `oracle-max-file` are reported as skipped and excluded from
-the denominator. The oracle uses exact byte comparisons and has no
-hash-collision assumption.
+Eligible source files are held in a temporary disk spool. `os.CreateTemp`
+uses the standard `TMPDIR` setting when a different filesystem is needed. The
+spool is removed on exit and excluded if it lies inside a directory snapshot.
 
-Eligible source content is kept in a temporary disk spool, not retained as a
-second in-memory snapshot. Memory is therefore bounded mainly by one source
-file, one target file, and the suffix array. The spool is removed when the
-command exits; use `-oracle-temp-dir` to place it on a filesystem with enough
-space for the analyzed snapshots.
+`oracle_actual_cdc_reuse_bytes` requires matching source chunk boundaries.
+`target_partition_oracle_reuse_bytes` asks whether each exact target chunk
+occurs anywhere in the preceding same-path file. Their difference is source
+boundary loss. Files above `oracle-max-file` are reported as skipped.
 
-Do not compare the global-history `earlier_snapshot_chunk_reuse_bytes` metric
-with this adjacent, same-path oracle; they answer different questions.
-
-This is **not** a global “theoretical best” dedup ratio. It excludes matches
-against other paths and non-adjacent snapshots, and it keeps the target's
-FastCDC boundaries fixed. It also ignores chunk metadata costs.
+This oracle is not a global theoretical optimum: it keeps target boundaries,
+does not search other paths, and covers only the adjacent pair. Normal dedup
+memory grows with unique chunks and the preceding snapshot's per-file chunk
+sets; the oracle additionally uses a suffix array for one eligible file at a
+time.

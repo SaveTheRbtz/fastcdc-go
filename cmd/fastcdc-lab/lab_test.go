@@ -3,7 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/xml"
+	"encoding/csv"
 	"flag"
 	"io"
 	"math"
@@ -101,8 +101,25 @@ func TestBenchmarkRoundAccountsForAllInput(t *testing.T) {
 	if first.bytes != 1<<20+17 || first.chunks == 0 {
 		t.Fatalf("benchmark result = %+v", first)
 	}
-	if first.bytes != second.bytes || first.chunks != second.chunks || first.digest != second.digest {
+	if first.bytes != second.bytes || first.chunks != second.chunks || first.checksum != second.checksum {
 		t.Fatalf("benchmark is not deterministic:\n%+v\n%+v", first, second)
+	}
+}
+
+func TestRunBenchWritesCSV(t *testing.T) {
+	t.Parallel()
+	var output bytes.Buffer
+	if err := runBench([]string{
+		"-bytes", "64KiB", "-corpus", "4KiB", "-rounds", "2",
+	}, &output, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	records, err := csv.NewReader(&output).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 4 || records[0][0] != "record" || records[1][0] != "round" || records[3][0] != "median" {
+		t.Fatalf("unexpected benchmark CSV: %#v", records)
 	}
 }
 
@@ -133,7 +150,7 @@ func TestFileBenchmarkVerifiesReconstructionBeforeTiming(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.bytes != int64(len(content)) || first.chunks == 0 || first.digest != second.digest {
+	if first.bytes != int64(len(content)) || first.chunks == 0 || first.checksum != second.checksum {
 		t.Fatalf("file benchmark results:\n%+v\n%+v", first, second)
 	}
 }
@@ -143,6 +160,7 @@ func TestAnalyticalDistributionSumsToOne(t *testing.T) {
 	config := resolvedConfig{minimum: 64, average: 256, maximum: 1024, normalization: 1}
 	bins := makeDistributionBins(config, 37)
 	total := 0.0
+	weighted := 0.0
 	for _, bin := range bins {
 		probability := analyticalCDF(bin.upper, config) - analyticalCDF(bin.lower, config)
 		if probability < 0 {
@@ -150,11 +168,24 @@ func TestAnalyticalDistributionSumsToOne(t *testing.T) {
 		}
 		total += probability
 	}
+	for length := config.minimum; length <= config.maximum; length++ {
+		probability := analyticalCDF(length+1, config) - analyticalCDF(length, config)
+		weighted += float64(length) * probability
+	}
 	if math.Abs(total-1) > 1e-12 {
 		t.Fatalf("bin probabilities sum to %.16g, want 1", total)
 	}
 	if mean := analyticalMean(config); mean <= float64(config.minimum) || mean >= float64(config.maximum) {
 		t.Fatalf("analytical mean %.2f lies outside chunk bounds", mean)
+	} else if math.Abs(mean-weighted) > 1e-9 {
+		t.Fatalf("analytical mean %.12g, PMF mean %.12g", mean, weighted)
+	}
+}
+
+func TestDistributionRequiresACompleteChunk(t *testing.T) {
+	t.Parallel()
+	if err := runDistribution([]string{"-bytes", "1B"}, io.Discard, io.Discard); err == nil {
+		t.Fatal("short distribution input unexpectedly succeeded")
 	}
 }
 
@@ -249,11 +280,15 @@ func TestDirectorySnapshotUsesRelativeSlashPathsAndRegularFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "nested", "more", "file"), []byte("nested"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	excluded := filepath.Join(root, "excluded")
+	if err := os.WriteFile(excluded, []byte("excluded"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Symlink(filepath.Join(root, "top"), filepath.Join(root, "link")); err != nil {
 		t.Fatal(err)
 	}
 	got := make(map[string]string)
-	if err := directorySnapshot(root).eachFile(func(path string, reader io.Reader, size int64) error {
+	if err := directorySnapshot(root, excluded).eachFile(func(path string, reader io.Reader, size int64) error {
 		content, err := io.ReadAll(reader)
 		if err != nil {
 			return err
@@ -272,39 +307,20 @@ func TestDirectorySnapshotUsesRelativeSlashPathsAndRegularFiles(t *testing.T) {
 	}
 }
 
-func TestDistributionSVGIsStableValidXML(t *testing.T) {
+func TestDirectorySnapshotRejectsSymlinkRoot(t *testing.T) {
 	t.Parallel()
-	bins := []distributionBin{
-		{lower: 64, upper: 128, observed: 0.25, analytical: 0.2},
-		{lower: 128, upper: 192, observed: 0.75, analytical: 0.8},
-	}
-	first := filepath.Join(t.TempDir(), "first.svg")
-	second := filepath.Join(t.TempDir(), "second.svg")
-	if err := writeDistributionSVG(first, "FastCDC <test>", bins); err != nil {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "root")
+	if err := os.Mkdir(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeDistributionSVG(second, "FastCDC <test>", bins); err != nil {
-		t.Fatal(err)
+	link := filepath.Join(parent, "link")
+	if err := os.Symlink(root, link); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
 	}
-	firstBytes, err := os.ReadFile(first)
-	if err != nil {
-		t.Fatal(err)
-	}
-	secondBytes, err := os.ReadFile(second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(firstBytes, secondBytes) {
-		t.Fatal("SVG output is not stable")
-	}
-	decoder := xml.NewDecoder(bytes.NewReader(firstBytes))
-	for {
-		if _, err := decoder.Token(); err != nil {
-			if err == io.EOF {
-				break
-			}
-			t.Fatalf("SVG is not valid XML: %v", err)
-		}
+	err := directorySnapshot(link, "").eachFile(func(string, io.Reader, int64) error { return nil })
+	if err == nil {
+		t.Fatal("symlink snapshot root unexpectedly succeeded")
 	}
 }
 
