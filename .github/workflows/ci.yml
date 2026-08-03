@@ -53,3 +53,5 @@ jobs:
         run: go test -race -run=^$ -fuzz=FuzzCutMatchesScalar -fuzztime=15s .
       - name: Fuzz fragmented streams
         run: go test -race -run=^$ -fuzz=FuzzReaderMatchesChunks -fuzztime=15s .
+      - name: Fuzz streaming error recovery
+        run: go test -race -run=^$ -fuzz=FuzzReaderMatchesChunksWithErrors -fuzztime=15s .
