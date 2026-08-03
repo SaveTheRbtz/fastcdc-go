@@ -1,3 +1,4 @@
+// Command fastcdc prints FastCDC chunk offsets and sizes for a file.
 package main
 
 import (
@@ -23,7 +24,8 @@ var csv = flag.Bool("csv", false, "output as CSV (default false)")
 func main() {
 	flag.Parse()
 	if err := run(); err != nil {
-		fatalf("%v", err)
+		fmt.Fprintln(os.Stderr, "fastcdc:", err)
+		os.Exit(1)
 	}
 }
 
@@ -78,10 +80,4 @@ func run() (err error) {
 			fmt.Printf("%9d  %9d\n", offset, len(chunk))
 		}
 	}
-}
-
-func fatalf(format string, a ...interface{}) {
-	format = fmt.Sprintf("ERROR: %s\n", format)
-	fmt.Fprintf(os.Stderr, format, a...)
-	os.Exit(1)
 }

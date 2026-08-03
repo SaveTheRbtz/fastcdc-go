@@ -26,12 +26,18 @@ type Reader struct {
 	eof     bool
 }
 
-// Next returns the next non-empty chunk. It returns io.EOF only after all
-// buffered data has been returned.
+// Next returns the next non-empty chunk with a nil error. It returns [io.EOF]
+// only after all buffered data has been returned, and never returns a chunk
+// together with a non-nil error.
 //
-// The returned slice aliases Reader's buffer and is valid only until the next
-// call to Next or Reset, even when that call returns an error. Use bytes.Clone
-// to retain it. Its capacity is clipped to its length.
+// If the source returns bytes and a non-EOF error together, Next preserves the
+// bytes and returns any complete chunks before reporting the error. A non-EOF
+// error does not end the stream; call Next again to resume. Repeated empty
+// reads may produce [io.ErrNoProgress] without discarding buffered data.
+//
+// The returned slice aliases reader-owned storage and is valid only until the
+// next call to Next or [Reader.Reset], even when that call returns an error.
+// Copy the bytes before retaining them. Its capacity is clipped to its length.
 func (r *Reader) Next() ([]byte, error) {
 	emptyReads := 0
 
@@ -84,16 +90,16 @@ func (r *Reader) Next() ([]byte, error) {
 	}
 }
 
-// InputOffset returns the logical end of the last successfully returned chunk
-// and the start of the next one. It excludes read-ahead and is unchanged when
-// Next returns an error.
+// InputOffset returns the byte offset at which the next chunk begins. It
+// advances only when [Reader.Next] returns a chunk, excludes read-ahead, and is
+// unchanged when Next returns an error.
 func (r *Reader) InputOffset() int64 {
 	return r.offset
 }
 
-// Reset discards buffered input and errors, resets InputOffset to zero, and
-// starts reading from src while retaining Reader's buffer. It panics if src is
-// nil.
+// Reset discards buffered input and pending errors, selects src as the new
+// source, and resets [Reader.InputOffset] to zero. It retains its working
+// allocation and panics if src is nil.
 func (r *Reader) Reset(src io.Reader) {
 	if src == nil {
 		panic("fastcdc: nil io.Reader")

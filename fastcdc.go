@@ -13,7 +13,8 @@ const (
 	maxChunkSize   = 16 << 20
 )
 
-// Normalization controls how tightly chunk sizes cluster around AverageSize.
+// Normalization controls how tightly chunk sizes cluster around
+// Config.AverageSize.
 type Normalization int
 
 const (
@@ -28,21 +29,31 @@ const (
 	NormalizationLevel3 Normalization = 3
 )
 
-// Config describes a FastCDC chunking format.
-//
-// AverageSize is required and must be a power of two from 256 bytes through
-// 4 MiB. MinSize and MaxSize default to AverageSize/4 and AverageSize*4.
-// Normalization defaults to NormalizationLevel1.
+// Config defines a FastCDC chunking format. Use identical field values wherever
+// identical chunk boundaries are required.
 type Config struct {
-	AverageSize   int
-	MinSize       int
-	MaxSize       int
+	// AverageSize selects the target chunk scale, in bytes. It is required and
+	// must be a power of two from 256 B through 4 MiB. It does not guarantee the
+	// arithmetic mean of produced chunk sizes.
+	AverageSize int
+
+	// MinSize is the smallest content-defined chunk size, in bytes. The final
+	// chunk may be shorter. Zero defaults to AverageSize/4; any other value must
+	// be positive and less than AverageSize.
+	MinSize int
+
+	// MaxSize is the hard upper limit for a chunk, in bytes. Zero defaults to
+	// AverageSize*4; any other value must exceed AverageSize and must not exceed
+	// 16 MiB.
+	MaxSize int
+
+	// Normalization selects one of NormalizationNone or NormalizationLevel1
+	// through NormalizationLevel3. Zero selects NormalizationLevel1.
 	Normalization Normalization
 }
 
-// Chunker contains validated, immutable FastCDC 2020 algorithm state.
-// Its methods are safe for concurrent use. The zero value is not usable; use
-// New to construct a Chunker.
+// Chunker defines a validated, immutable chunking format. Its methods are safe
+// for concurrent use. The zero value is not usable; use [New].
 type Chunker struct {
 	minSize     int
 	averageSize int
@@ -51,7 +62,8 @@ type Chunker struct {
 	maskLarge   uint64
 }
 
-// New validates config and constructs a Chunker.
+// New returns a Chunker for config. It returns an error if config violates any
+// of the documented size or normalization rules.
 func New(config Config) (*Chunker, error) {
 	if config.AverageSize < minAverageSize || config.AverageSize > maxAverageSize {
 		return nil, fmt.Errorf("fastcdc: average size must be between 256 B and 4 MiB")
@@ -113,12 +125,13 @@ func normalizationBits(normalization Normalization) (int, error) {
 	}
 }
 
-// Cut returns the length of the first chunk in data. It treats data as a
-// complete input, so a final short chunk is returned immediately. Streaming
-// callers should use NewReader instead.
+// Cut returns the length n of the first chunk, data[:n]. Data must begin at a
+// chunk boundary and is treated as complete. If data ends before a boundary,
+// Cut returns len(data) as the final chunk. Use [Chunker.NewReader] when more
+// bytes may follow.
 //
-// FastCDC tests the byte at a content-defined cut point, but that byte is the
-// first byte of the next chunk. Cut returns zero only when data is empty.
+// For non-empty data, n is positive and does not exceed len(data) or the
+// configured maximum chunk size. Cut returns zero only for empty data.
 func (c *Chunker) Cut(data []byte) int {
 	end := min(len(data), c.maxSize)
 	if end <= c.minSize {
@@ -132,8 +145,11 @@ func (c *Chunker) Cut(data []byte) int {
 	return end
 }
 
-// Chunks returns a reusable iterator over the offset and data of each chunk.
-// The chunks alias data and have their capacity clipped to their length.
+// Chunks returns an iterator over the byte offset and contents of each chunk in
+// complete data. The iterator may be ranged over repeatedly; each pass reads
+// data again, so data must not be mutated while a pass is in progress.
+//
+// Each chunk aliases data and has its capacity clipped to its length.
 func (c *Chunker) Chunks(data []byte) iter.Seq2[int, []byte] {
 	return func(yield func(int, []byte) bool) {
 		for offset := 0; offset < len(data); {
@@ -147,8 +163,9 @@ func (c *Chunker) Chunks(data []byte) iter.Seq2[int, []byte] {
 	}
 }
 
-// NewReader returns an independent Reader for src. It panics if src is nil.
-// The returned Reader reuses one MaxSize buffer across Reset calls.
+// NewReader returns an independent Reader for src. Creating a Reader allocates
+// storage equal to the effective Config.MaxSize; [Reader.Reset] reuses it.
+// NewReader panics if src is nil.
 func (c *Chunker) NewReader(src io.Reader) *Reader {
 	if src == nil {
 		panic("fastcdc: nil io.Reader")

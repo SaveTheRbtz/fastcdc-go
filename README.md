@@ -3,8 +3,8 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/SaveTheRbtz/fastcdc-go.svg)](https://pkg.go.dev/github.com/SaveTheRbtz/fastcdc-go)
 
 `fastcdc-go` splits byte slices and streams into content-defined chunks with the
-FastCDC 2020 algorithm. It provides one immutable, concurrency-safe chunking
-format and small APIs for in-memory and streaming input.
+FastCDC 2020 algorithm. Its validated `Chunker` is immutable and safe for
+concurrent use, with small APIs for in-memory and streaming input.
 
 The module requires Go 1.23 or later.
 
@@ -29,18 +29,18 @@ for offset, chunk := range chunker.Chunks(data) {
 }
 ```
 
-`Chunks` returns a reusable iterator. Each chunk aliases the input slice and
-has its capacity clipped to its length. Mutating either the input or a chunk
-mutates the same storage.
+`Chunks` can be ranged over repeatedly and reads the input during each pass.
+Do not mutate the input while ranging. Each chunk aliases the input slice and
+has its capacity clipped to its length; mutating either view changes the same
+storage.
 
 `Cut(data)` is the lower-level operation. It returns the length of the first
 chunk, or zero for empty input. It treats `data` as a complete input, so it
 returns a short final chunk immediately. Do not use `Cut` on an incomplete
 stream fragment; use `Reader` instead.
 
-FastCDC inspects the byte at a content-defined cut point, but that byte begins
-the next chunk. Advance by the returned length and include `data[n:]` in the
-next call. `Chunks` and `Reader` handle this convention for you.
+To loop over `Cut` manually, process `data[:n]` and continue with `data[n:]`.
+`Chunks` and `Reader` handle this for you.
 
 ## Streams
 
@@ -65,9 +65,9 @@ for {
 ```
 
 `Next` returns non-empty chunks and reports `io.EOF` only after returning the
-final buffered bytes. The returned slice borrows the reader's fixed
-`MaxSize` buffer and remains valid only until the next call to `Next` or
-`Reset`, even if that call returns an error. Clone a chunk before retaining it:
+final buffered bytes. The returned slice borrows reader-owned storage and
+remains valid only until the next call to `Next` or `Reset`, even if that call
+returns an error. Clone a chunk before retaining it:
 
 ```go
 saved := bytes.Clone(chunk)
@@ -81,7 +81,7 @@ read from the source. The reader never closes its source.
 If an underlying `Read` returns bytes and an error together, those bytes are
 kept and examined first. `Next` returns any complete chunks before reporting a
 non-EOF error. The caller may call `Next` again to resume without losing the
-buffered partial chunk. One hundred consecutive `(0, nil)` reads produce
+buffered partial chunk. Repeated `(0, nil)` reads eventually produce
 `io.ErrNoProgress`; the reader can still be resumed or reset.
 
 `Reader` is not safe for concurrent use and must not be copied. `Reset` reuses
@@ -98,6 +98,10 @@ its allocation, discards buffered input and pending errors, and sets
 | `MinSize` | Positive and less than `AverageSize`; default `AverageSize / 4` |
 | `MaxSize` | Greater than `AverageSize` and at most 16 MiB; default `AverageSize * 4` |
 | `Normalization` | Default `NormalizationLevel1` |
+
+`AverageSize` selects the target scale; it does not guarantee the arithmetic
+mean of produced chunks. The observed mean also depends on normalization and
+input data.
 
 Normalization changes the boundary mask below and above the requested average
 so chunk sizes cluster more tightly around it:

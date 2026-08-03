@@ -14,28 +14,26 @@ func ExampleChunker_Chunks() {
 		panic(err)
 	}
 
-	data := make([]byte, 2048)
-	for offset, chunk := range chunker.Chunks(data) {
-		fmt.Printf("offset=%d size=%d\n", offset, len(chunk))
+	data := bytes.Repeat([]byte("content-defined storage\n"), 100)
+	var saved [][]byte
+	for _, chunk := range chunker.Chunks(data) {
+		saved = append(saved, bytes.Clone(chunk))
 	}
+	fmt.Println(len(saved) > 1, bytes.Equal(bytes.Join(saved, nil), data))
 
 	// Output:
-	// offset=0 size=1024
-	// offset=1024 size=1024
+	// true true
 }
 
 func ExampleReader() {
-	chunker, err := fastcdc.New(fastcdc.Config{
-		AverageSize:   256,
-		Normalization: fastcdc.NormalizationNone,
-	})
+	chunker, err := fastcdc.New(fastcdc.Config{AverageSize: 256})
 	if err != nil {
 		panic(err)
 	}
 
-	data := make([]byte, 65)
-	data[64] = 0xc0
+	data := bytes.Repeat([]byte("streamed input remains in order\n"), 100)
 	reader := chunker.NewReader(bytes.NewReader(data))
+	var restored bytes.Buffer
 	for {
 		offset := reader.InputOffset()
 		chunk, err := reader.Next()
@@ -45,10 +43,13 @@ func ExampleReader() {
 		if err != nil {
 			panic(err)
 		}
-		fmt.Printf("offset=%d size=%d\n", offset, len(chunk))
+		if offset != int64(restored.Len()) {
+			panic("non-contiguous chunk")
+		}
+		restored.Write(chunk)
 	}
+	fmt.Println(bytes.Equal(restored.Bytes(), data))
 
 	// Output:
-	// offset=0 size=64
-	// offset=64 size=1
+	// true
 }

@@ -1,7 +1,5 @@
-// Command fastcdc-lab provides reproducible experiments for fastcdc-go.
-//
-// It is deliberately separate from the end-user fastcdc command. Its output
-// formats favor reviewable data over a polished interactive interface.
+// Command fastcdc-lab measures FastCDC chunk distributions and cross-snapshot
+// deduplication. It writes canonical CSV for review or plotting.
 package main
 
 import (
