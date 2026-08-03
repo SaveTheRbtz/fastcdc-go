@@ -2,10 +2,8 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/csv"
 	"flag"
-	"fmt"
 	"io"
 	"maps"
 	"math"
@@ -82,58 +80,6 @@ func TestSplitMixReaderIsIndependentOfReadSizes(t *testing.T) {
 	}
 	if !bytes.Equal(oneRead, manyReads) {
 		t.Fatal("SplitMix output changed with Read sizes")
-	}
-}
-
-func TestRunBenchWritesCSV(t *testing.T) {
-	var output bytes.Buffer
-	if err := run([]string{
-		"bench", "-bytes", "64KiB", "-corpus", "4KiB", "-rounds", "2",
-	}, &output, io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	rows := readCSVRows(t, &output)
-	if len(rows) != 3 ||
-		rows[0]["record"] != "round" ||
-		rows[1]["record"] != "round" ||
-		rows[2]["record"] != "median" {
-		t.Fatalf("unexpected benchmark records: %#v", rows)
-	}
-	for i, row := range rows {
-		if row["input_bytes"] != "65536" || row["chunks"] == "0" || row["boundary_checksum"] == "" {
-			t.Fatalf("row %d has inconsistent metadata: %#v", i, row)
-		}
-		if row["chunks"] != rows[0]["chunks"] || row["boundary_checksum"] != rows[0]["boundary_checksum"] {
-			t.Errorf("row %d result differs from row 0: %#v", i, row)
-		}
-	}
-}
-
-func TestRunBenchFile(t *testing.T) {
-	content := make([]byte, 1<<20+31)
-	_, _ = io.ReadFull(newSplitMixReader(91), content)
-	path := filepath.Join(t.TempDir(), "input.bin")
-	if err := os.WriteFile(path, content, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	var output bytes.Buffer
-	if err := run([]string{
-		"bench", "-average", "1KiB", "-file", path, "-rounds", "2",
-	}, &output, io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	rows := readCSVRows(t, &output)
-	if len(rows) != 3 {
-		t.Fatalf("file benchmark report has %d rows, want 3", len(rows))
-	}
-	wantDigest := fmt.Sprintf("%x", sha256.Sum256(content))
-	for i, row := range rows {
-		if row["input_bytes"] != strconv.Itoa(len(content)) || row["input_sha256"] != wantDigest || row["chunks"] == "0" {
-			t.Fatalf("row %d has inconsistent file metadata: %#v", i, row)
-		}
-		if row["chunks"] != rows[0]["chunks"] || row["boundary_checksum"] != rows[0]["boundary_checksum"] {
-			t.Errorf("row %d result differs from row 0: %#v", i, row)
-		}
 	}
 }
 

@@ -10,14 +10,14 @@ import (
 
 const benchmarkDataSize = 64 << 20
 
-func BenchmarkPairedVersusScalar(b *testing.B) {
+func BenchmarkUnrolledVersusScalar(b *testing.B) {
 	textPattern := []byte("The quick brown fox jumps over the lazy dog.\n")
 	chunker := mustChunker(b, Config{AverageSize: 64 << 10})
 	scanners := []struct {
 		name string
 		cut  func([]byte) int
 	}{
-		{name: "paired", cut: chunker.Cut},
+		{name: "unrolled", cut: chunker.Cut},
 		{name: "scalar", cut: func(data []byte) int { return scalarCut(chunker, data) }},
 	}
 	inputs := []struct {

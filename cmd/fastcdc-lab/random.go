@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/binary"
-	"io"
 )
 
 // splitMixReader is a reproducible byte stream. Its output does not depend on
@@ -34,32 +33,5 @@ func (r *splitMixReader) Read(p []byte) (int, error) {
 		written += n
 		p = p[n:]
 	}
-	return written, nil
-}
-
-type repeatingReader struct {
-	pattern   []byte
-	remaining int64
-	position  int
-}
-
-func (r *repeatingReader) Read(p []byte) (int, error) {
-	if r.remaining == 0 {
-		return 0, io.EOF
-	}
-	if int64(len(p)) > r.remaining {
-		p = p[:r.remaining]
-	}
-	written := 0
-	for len(p) > 0 {
-		n := copy(p, r.pattern[r.position:])
-		written += n
-		p = p[n:]
-		r.position += n
-		if r.position == len(r.pattern) {
-			r.position = 0
-		}
-	}
-	r.remaining -= int64(written)
 	return written, nil
 }
