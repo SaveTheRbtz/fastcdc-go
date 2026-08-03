@@ -54,8 +54,8 @@ jobs:
         with:
           go-version: stable
       - name: Fuzz the paired scanner
-        run: go test -race -run=^$ -fuzz='^FuzzCutMatchesScalar$' -fuzztime=15s -fuzzminimizetime=1s .
+        run: go test -race -run=^$ -fuzz='^FuzzCutMatchesScalar$' -fuzztime=15s -fuzzminimizetime=1s -parallel=2 .
       - name: Fuzz fragmented streams
-        run: go test -race -run=^$ -fuzz='^FuzzReaderMatchesChunks$' -fuzztime=15s -fuzzminimizetime=1s .
+        run: go test -race -run=^$ -fuzz='^FuzzReaderMatchesChunks$' -fuzztime=15s -fuzzminimizetime=1s -parallel=2 .
       - name: Fuzz terminal stream errors
-        run: go test -race -run=^$ -fuzz='^FuzzReaderTerminalErrors$' -fuzztime=15s -fuzzminimizetime=1s .
+        run: go test -race -run=^$ -fuzz='^FuzzReaderTerminalErrors$' -fuzztime=15s -fuzzminimizetime=1s -parallel=2 .
