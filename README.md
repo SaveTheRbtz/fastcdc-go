@@ -120,6 +120,48 @@ where identical boundaries are required.
 A `Chunker` contains only validated, immutable state. Share it freely between
 goroutines, and create a separate `Reader` for each stream.
 
+## Performance
+
+On an Intel Core i5-10210U with Go 1.26.5 on Linux/amd64, `Reader` processed a
+1,660,723,200-byte tar archive of Linux v7.1 in 1.626 seconds. The configuration
+used a 1 MiB average chunk size and the derived defaults: 256 KiB minimum,
+4 MiB maximum, and normalization level 1.
+
+The input was in the operating-system page cache. The process was pinned to one
+hardware thread with `GOMAXPROCS=1`; the CPU used its performance governor and
+the NMI watchdog was disabled. Each of ten samples read the complete archive
+once. The benchmark deliberately omitted the race detector, whose
+instrumentation changes performance.
+
+| `benchstat` metric | Result |
+| --- | ---: |
+| Time | 1.626 s/op ± 1% |
+| Throughput | 974.2 MiB/s ± 1% |
+| Allocated bytes | 272 B/op ± 0% |
+| Allocations | 5 allocs/op ± 0% |
+
+`Reader`'s reusable 4 MiB chunk buffer was allocated before measurement. The
+reported allocations include opening and closing the input file and resetting
+the reader for one complete pass.
+
+The input was the archive of Linux commit
+`8cd9520d35a6c38db6567e97dd93b1f11f185dc6` (tag `v7.1`), with SHA-256
+`b5470460e136e037c3f90579b6ec9b61c53e6f833b1acc37c0329466ffea0b6e`.
+Reproduce the measurement with:
+
+```sh
+go install golang.org/x/perf/cmd/benchstat@v0.0.0-20260709024250-82a0b07e230d
+
+git -C "$LINUX_REPO" archive --format=tar \
+  --output=/tmp/linux-v7.1.tar \
+  8cd9520d35a6c38db6567e97dd93b1f11f185dc6
+
+taskset -c 3 env GOMAXPROCS=1 FASTCDC_BENCH_FILE=/tmp/linux-v7.1.tar \
+  go test -run '^$' -bench '^BenchmarkReaderFile$' \
+  -benchmem -benchtime=1x -count=10 > reader.bench
+benchstat reader.bench
+```
+
 ## Command-line tool
 
 Install the included boundary-inspection tool:

@@ -12,7 +12,6 @@ import (
 const usageText = `usage: fastcdc-lab <command> [options]
 
 Commands:
-  bench         measure streaming throughput on deterministic input
   distribution  write an observed and analytical chunk-size distribution
   dedup         compare deduplication across directories or Git revisions
 
@@ -38,8 +37,6 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 
 	switch args[0] {
-	case "bench":
-		return runBench(args[1:], stdout, stderr)
 	case "distribution":
 		return runDistribution(args[1:], stdout, stderr)
 	case "dedup":

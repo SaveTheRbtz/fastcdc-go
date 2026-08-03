@@ -192,8 +192,8 @@ func (c *Chunker) NewReader(src io.Reader) *Reader {
 	return r
 }
 
-// scanState is always stored in the scalar Gear-hash representation. Pairing
-// is local to scanPhase so the state can resume at any read boundary.
+// scanState stores the scalar Gear hash so scanning can resume at any read
+// boundary.
 type scanState struct {
 	position int
 	hash     uint64
@@ -210,42 +210,69 @@ func (s *scanState) reset(minSize int) {
 func (c *Chunker) scan(data []byte, end int, state *scanState) int {
 	center := min(c.averageSize, end)
 	if state.position < center {
-		cut, hash := scanPhase(data, state.position, center, state.hash, c.maskSmall)
+		start := state.position
+		cut, hash := scanPhase(data[start:center], state.hash, c.maskSmall)
 		state.hash = hash
 		if cut >= 0 {
-			return cut
+			return start + cut
 		}
 		state.position = center
 	}
 	if state.position < end {
-		cut, hash := scanPhase(data, state.position, end, state.hash, c.maskLarge)
+		start := state.position
+		cut, hash := scanPhase(data[start:end], state.hash, c.maskLarge)
 		state.hash = hash
 		if cut >= 0 {
-			return cut
+			return start + cut
 		}
 		state.position = end
 	}
 	return -1
 }
 
-// scanPhase applies two exact scalar Gear steps per loop. The first temporary
-// hash is shifted once, so it is tested with a shifted mask. An odd final
-// candidate is processed scalarly, leaving hash resumable across fragments.
-func scanPhase(data []byte, start, end int, hash, mask uint64) (int, uint64) {
-	shiftedMask := mask << 1
-	i := start
-	for ; i+1 < end; i += 2 {
-		hash = (hash << 2) + gearShifted[data[i]]
-		if hash&shiftedMask == 0 {
+// scanPhase preloads seven independent Gear values before applying the ordered
+// hash steps. The short tail leaves hash resumable across input fragments.
+func scanPhase(data []byte, hash, mask uint64) (int, uint64) {
+	i := 0
+	for ; i < len(data)-6; i += 7 {
+		first := gear[data[i]]
+		second := gear[data[i+1]]
+		third := gear[data[i+2]]
+		fourth := gear[data[i+3]]
+		fifth := gear[data[i+4]]
+		sixth := gear[data[i+5]]
+		seventh := gear[data[i+6]]
+
+		hash = (hash << 1) + first
+		if hash&mask == 0 {
 			return i, hash
 		}
-
-		hash += gear[data[i+1]]
+		hash = (hash << 1) + second
 		if hash&mask == 0 {
 			return i + 1, hash
 		}
+		hash = (hash << 1) + third
+		if hash&mask == 0 {
+			return i + 2, hash
+		}
+		hash = (hash << 1) + fourth
+		if hash&mask == 0 {
+			return i + 3, hash
+		}
+		hash = (hash << 1) + fifth
+		if hash&mask == 0 {
+			return i + 4, hash
+		}
+		hash = (hash << 1) + sixth
+		if hash&mask == 0 {
+			return i + 5, hash
+		}
+		hash = (hash << 1) + seventh
+		if hash&mask == 0 {
+			return i + 6, hash
+		}
 	}
-	if i < end {
+	for ; i < len(data); i++ {
 		hash = (hash << 1) + gear[data[i]]
 		if hash&mask == 0 {
 			return i, hash

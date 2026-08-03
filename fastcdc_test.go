@@ -328,7 +328,7 @@ func TestFastCDC2020Vectors(t *testing.T) {
 	}
 }
 
-func TestPairedScanMatchesScalar(t *testing.T) {
+func TestScanMatchesScalar(t *testing.T) {
 	configs := []Config{
 		{AverageSize: 256},
 		{AverageSize: 256, Normalization: NormalizationNone},
@@ -361,7 +361,7 @@ func TestPairedScanMatchesScalar(t *testing.T) {
 				got := chunker.Cut(data[:length])
 				want := scalarCut(chunker, data[:length])
 				if got != want {
-					t.Errorf("prefix %d (case %d): paired Cut = %d, scalar Cut = %d", length, j, got, want)
+					t.Errorf("prefix %d (case %d): Cut = %d, scalar Cut = %d", length, j, got, want)
 				}
 			}
 
@@ -369,7 +369,7 @@ func TestPairedScanMatchesScalar(t *testing.T) {
 				got := chunker.Cut(data[offset:])
 				want := scalarCut(chunker, data[offset:])
 				if got != want {
-					t.Fatalf("offset %d: paired Cut = %d, scalar Cut = %d", offset, got, want)
+					t.Fatalf("offset %d: Cut = %d, scalar Cut = %d", offset, got, want)
 				}
 				if got <= 0 {
 					t.Fatalf("offset %d: Cut returned non-positive length %d", offset, got)
@@ -423,12 +423,6 @@ func TestOddBoundRegressions(t *testing.T) {
 }
 
 func TestCanonicalTables(t *testing.T) {
-	for i := range gear {
-		if gearShifted[i] != gear[i]<<1 {
-			t.Errorf("shifted Gear[%d] = %#016x, want %#016x", i, gearShifted[i], gear[i]<<1)
-		}
-	}
-
 	digests := []struct {
 		name  string
 		table []uint64
@@ -472,7 +466,7 @@ func cutLengths(chunker *Chunker, data []byte) []int {
 }
 
 // scalarCut is the straightforward byte-at-a-time FastCDC scan. Keeping this
-// oracle separate from scanPhase protects the paired optimization against
+// oracle separate from scanPhase protects the unrolled scan against
 // alignment errors at odd minima, maxima, and fragment ends.
 func scalarCut(chunker *Chunker, data []byte) int {
 	end := min(len(data), chunker.maxSize)
@@ -504,7 +498,7 @@ func assertScalarCut(t *testing.T, chunker *Chunker, data []byte, want int) {
 		t.Fatalf("test oracle returned %d, want %d", got, want)
 	}
 	if got := chunker.Cut(data); got != want {
-		t.Errorf("paired Cut returned %d, want %d", got, want)
+		t.Errorf("Cut returned %d, want %d", got, want)
 	}
 }
 

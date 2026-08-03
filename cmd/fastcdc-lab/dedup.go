@@ -122,7 +122,7 @@ func runDedup(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("oracle-max-file: %w", err)
 	}
-	if *oracle && (oracleMaxFile < 1 || oracleMaxFile > int64(maxInt())) {
+	if *oracle && (oracleMaxFile < 1 || strconv.IntSize == 32 && oracleMaxFile > 1<<31-1) {
 		return fmt.Errorf("oracle-max-file must be positive and fit int on this platform")
 	}
 
