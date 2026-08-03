@@ -10,5 +10,7 @@
 //
 // Chunks from [Chunker.Chunks] alias the input. Chunks from [Reader.Next] alias
 // reader-owned storage and remain valid only until the next call to Reader.Next
-// or [Reader.Reset]. A Reader may read ahead and never closes its source.
+// or [Reader.Reset]. A Reader may read ahead and never closes its source. On a
+// non-EOF source error, [Reader.Next] returns all chunks from the successfully
+// read prefix, including its short tail, then repeats the error until Reset.
 package fastcdc

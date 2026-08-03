@@ -163,8 +163,8 @@ func (c *Chunker) Chunks(data []byte) iter.Seq2[int, []byte] {
 	}
 }
 
-// NewReader returns an independent Reader for src. Creating a Reader allocates
-// storage equal to the effective Config.MaxSize; [Reader.Reset] reuses it.
+// NewReader returns an independent Reader for src. It allocates a chunk buffer
+// equal to the effective Config.MaxSize; [Reader.Reset] reuses that buffer.
 // NewReader panics if src is nil.
 func (c *Chunker) NewReader(src io.Reader) *Reader {
 	if src == nil {

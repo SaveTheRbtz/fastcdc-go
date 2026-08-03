@@ -78,14 +78,14 @@ reports the logical end of that chunk, not the underlying source position.
 Abandoning the reader or calling `Reset` can therefore discard bytes already
 read from the source. The reader never closes its source.
 
-If an underlying `Read` returns bytes and an error together, those bytes are
-kept and examined first. `Next` returns any complete chunks before reporting a
-non-EOF error. The caller may call `Next` again to resume without losing the
-buffered partial chunk. Repeated `(0, nil)` reads eventually produce
-`io.ErrNoProgress`; the reader can still be resumed or reset.
+If the source returns a non-EOF error, the reader treats the successfully read
+prefix as a complete, truncated stream. `Next` returns its complete chunks and
+remaining short tail before returning the source error. The error is terminal:
+later calls return the same error until `Reset` selects a new source. Repeated
+`(0, nil)` reads eventually produce terminal `io.ErrNoProgress`.
 
 `Reader` is not safe for concurrent use and must not be copied. `Reset` reuses
-its allocation, discards buffered input and pending errors, and sets
+its chunk buffer, discards buffered input and the terminal error, and sets
 `InputOffset` back to zero.
 
 ## Configuration
