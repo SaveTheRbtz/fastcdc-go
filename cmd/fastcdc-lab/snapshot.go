@@ -86,7 +86,7 @@ type gitFile struct {
 
 func gitRevisionSnapshot(repository, revision string) snapshot {
 	return snapshot{
-		label: fmt.Sprintf("git:%s:%s", repository, revision),
+		label: "git:" + revision,
 		eachFile: func(visit func(string, io.Reader, int64) error) error {
 			files, err := listGitFiles(repository, revision)
 			if err != nil {

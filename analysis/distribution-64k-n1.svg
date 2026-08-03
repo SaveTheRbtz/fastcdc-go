@@ -323,10 +323,7 @@
 	<path stroke='rgb( 76, 120, 168)'  d='M804.49,467.20 L804.49,465.81 L816.27,465.81 L816.27,467.20 L804.49,467.20 Z  '/>	<g stroke='none' shape-rendering='crispEdges'>
 		<polygon fill = 'rgb(156, 180, 207)' points = '816.27,467.20 828.06,467.20 828.06,466.50 816.27,466.50 '/>
 	</g>
-	<path stroke='rgb( 76, 120, 168)'  d='M816.27,467.20 L816.27,466.51 L828.05,466.51 L828.05,467.20 L816.27,467.20 Z  '/>	<g stroke='none' shape-rendering='crispEdges'>
-		<polygon fill = 'rgb(156, 180, 207)' points = '828.05,467.20 828.07,467.20 828.07,458.53 828.05,458.53 '/>
-	</g>
-	<path stroke='rgb( 76, 120, 168)'  d='M828.05,467.20 L828.05,458.54 L828.06,458.54 L828.06,467.20 L828.05,467.20 Z  '/></g>
+	<path stroke='rgb( 76, 120, 168)'  d='M816.27,467.20 L816.27,466.51 L828.05,466.51 L828.05,467.20 L816.27,467.20 Z  '/></g>
 	</g>
 	<g id="gnuplot_plot_2" ><title>independent-uniform model</title>
 <g fill="none" color="#FFFFFF" stroke="rgb( 76, 120, 168)" stroke-width="2.00" stroke-linecap="butt" stroke-linejoin="miter">
@@ -344,7 +341,33 @@
 		L480.56,427.70 L492.34,432.34 L504.12,436.44 L515.90,440.05 L527.68,443.24 L539.46,446.06 L551.24,448.54 L563.02,450.73
 		L574.80,452.67 L586.57,454.38 L598.35,455.88 L610.13,457.21 L621.91,458.39 L633.69,459.42 L645.47,460.34 L657.25,461.14
 		L669.03,461.85 L680.81,462.48 L692.59,463.04 L704.37,463.53 L716.15,463.96 L727.93,464.34 L739.71,464.67 L751.49,464.97
-		L763.27,465.23 L775.05,465.46 L786.82,465.67 L798.60,465.85 L810.38,466.01 L822.16,466.15 L828.05,459.29  '/></g>
+		L763.27,465.23 L775.05,465.46 L786.82,465.67 L798.60,465.85 L810.38,466.01 L822.16,466.15  '/></g>
+	</g>
+	<g id="gnuplot_plot_3" ><title>observed forced maximum</title>
+<g fill="none" color="#FFFFFF" stroke="rgb(228,  87,  86)" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
+</g>
+<g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
+	<g transform="translate(874.84,102.59)" stroke="none" fill="black" font-family="sans" font-size="11.00"  text-anchor="end">
+		<text><tspan font-family="sans" >observed forced maximum</tspan></text>
+	</g>
+</g>
+<g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
+	<use xlink:href='#gpPt6' transform='translate(828.05,458.54) scale(4.95)' color='rgb( 76, 120, 168)'/>
+	<use xlink:href='#gpPt6' transform='translate(902.03,99.01) scale(4.95)' color='rgb( 76, 120, 168)'/>
+</g>
+	</g>
+	<g id="gnuplot_plot_4" ><title>model forced maximum</title>
+<g fill="none" color="#FFFFFF" stroke="rgb( 76, 120, 168)" stroke-width="2.00" stroke-linecap="butt" stroke-linejoin="miter">
+</g>
+<g fill="none" color="black" stroke="currentColor" stroke-width="2.00" stroke-linecap="butt" stroke-linejoin="miter">
+	<g transform="translate(874.84,119.09)" stroke="none" fill="black" font-family="sans" font-size="11.00"  text-anchor="end">
+		<text><tspan font-family="sans" >model forced maximum</tspan></text>
+	</g>
+</g>
+<g fill="none" color="black" stroke="currentColor" stroke-width="2.00" stroke-linecap="butt" stroke-linejoin="miter">
+	<use xlink:href='#gpPt1' transform='translate(828.05,459.29) scale(6.19)' color='rgb(228,  87,  86)'/>
+	<use xlink:href='#gpPt1' transform='translate(902.03,115.51) scale(6.19)' color='rgb(228,  87,  86)'/>
+</g>
 	</g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="2.00" stroke-linecap="butt" stroke-linejoin="miter">
 </g>
@@ -352,7 +375,7 @@
 </g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<path stroke='black'  d='M74.17,49.51 L74.17,467.20 L936.92,467.20 L936.92,49.51 L74.17,49.51 Z  '/>	<g transform="translate(17.58,258.36) rotate(270.00)" stroke="none" fill="black" font-family="sans" font-size="11.00"  text-anchor="middle">
-		<text><tspan font-family="sans" >probability</tspan></text>
+		<text><tspan font-family="sans" >probability mass per bin</tspan></text>
 	</g>
 </g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
@@ -364,7 +387,7 @@
 </g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<g transform="translate(505.54,28.34)" stroke="none" fill="black" font-family="sans" font-size="11.00"  text-anchor="middle">
-		<text><tspan font-family="sans" >FastCDC chunk-size distribution (analysis/distribution-64k-n1.csv)</tspan></text>
+		<text><tspan font-family="sans" >FastCDC chunk-size distribution</tspan></text>
 	</g>
 </g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">

@@ -97,8 +97,7 @@ and excludes other paths, renames, and older snapshots. The exact output is in
 
 ## Reproduce
 
-From the repository root, with the Linux Git repository at
-`/home/rbtz/porn/linux`:
+From the repository root:
 
 ```sh
 go run -race ./cmd/fastcdc-lab distribution \
@@ -109,10 +108,11 @@ gnuplot -c cmd/fastcdc-lab/distribution.gnuplot \
   analysis/distribution-64k-n1.csv analysis/distribution-64k-n1.svg
 ```
 
-Use the four pinned commits above with `fastcdc-lab dedup`; repeat once with
-`-average 8KiB` and once with `-average 64KiB`. For the oracle, pass only the
-v7.0 and v7.1 commits together with `-average 8KiB -oracle
--oracle-max-file 1MiB`.
+For the history runs, set `LINUX_REPO` to the path of a Linux Git checkout and
+use the four pinned commits above with
+`fastcdc-lab dedup -repo "$LINUX_REPO"`; repeat once with an 8 KiB average and
+once with a 64 KiB average. For the oracle, pass only the v7.0 and v7.1
+commits together with `-average 8KiB -oracle -oracle-max-file 1MiB`.
 
 Payload savings exclude chunk recipes, hashes, indexes, filenames, modes, and
 compression. SHA-256 identities are probabilistic for the aggregate history

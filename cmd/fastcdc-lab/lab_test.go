@@ -324,6 +324,15 @@ func TestDirectorySnapshotRejectsSymlinkRoot(t *testing.T) {
 	}
 }
 
+func TestGitRevisionSnapshotLabelIsRepositoryIndependent(t *testing.T) {
+	t.Parallel()
+	const revision = "0123456789abcdef"
+	got := gitRevisionSnapshot("/private/machine-specific/path", revision).label
+	if want := "git:" + revision; got != want {
+		t.Fatalf("snapshot label = %q, want %q", got, want)
+	}
+}
+
 func memorySnapshot(label string, files map[string][]byte) snapshot {
 	return snapshot{label: label, eachFile: func(visit func(string, io.Reader, int64) error) error {
 		paths := make([]string, 0, len(files))
