@@ -7,11 +7,25 @@ import (
 	"math/bits"
 )
 
+//go:generate go run ./internal/gentable
+
 const (
 	minAverageSize = 256
 	maxAverageSize = 4 << 20
 	maxChunkSize   = 16 << 20
 )
+
+// masks is the distributed mask table used by fastcdc-rs v2020. Indexes are
+// target-size bit counts; indexes 0 through 4 are unused.
+var masks = [...]uint64{
+	0, 0, 0, 0,
+	0, 0x0000000001804110, 0x0000000001803110, 0x0000000018035100,
+	0x0000001800035300, 0x0000019000353000, 0x0000590003530000, 0x0000d90003530000,
+	0x0000d90103530000, 0x0000d90303530000, 0x0000d90313530000, 0x0000d90f03530000,
+	0x0000d90303537000, 0x0000d90703537000, 0x0000d90707537000, 0x0000d91707537000,
+	0x0000d91747537000, 0x0000d91767537000, 0x0000d93767537000, 0x0000d93777537000,
+	0x0000d93777577000, 0x0000db3777577000,
+}
 
 // Normalization controls how tightly chunk sizes cluster around
 // Config.AverageSize.
