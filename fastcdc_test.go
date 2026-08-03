@@ -438,7 +438,7 @@ func TestCanonicalTables(t *testing.T) {
 	}
 }
 
-func mustChunker(t *testing.T, config Config) *Chunker {
+func mustChunker(t testing.TB, config Config) *Chunker {
 	t.Helper()
 	chunker, err := New(config)
 	if err != nil {
