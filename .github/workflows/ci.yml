@@ -53,7 +53,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: stable
-      - name: Fuzz the paired scanner
+      - name: Fuzz boundary equivalence
         run: go test -race -run=^$ -fuzz='^FuzzCutMatchesScalar$' -fuzztime=15s -fuzzminimizetime=1s -parallel=2 .
       - name: Fuzz fragmented streams
         run: go test -race -run=^$ -fuzz='^FuzzReaderMatchesChunks$' -fuzztime=15s -fuzzminimizetime=1s -parallel=2 .
