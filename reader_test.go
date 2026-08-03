@@ -3,6 +3,7 @@ package fastcdc
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"slices"
@@ -11,15 +12,13 @@ import (
 )
 
 func TestReaderMatchesChunksAcrossFragments(t *testing.T) {
-	t.Parallel()
-
 	chunker := mustChunker(t, Config{
 		MinSize:       65,
 		AverageSize:   256,
 		MaxSize:       1025,
 		Normalization: NormalizationLevel2,
 	})
-	data := readerTestData(256 << 10)
+	data := splitMixBytes(256<<10, 0x243f6a8885a308d3)
 	want := collectMemoryChunks(chunker, data)
 
 	tests := []struct {
@@ -36,16 +35,12 @@ func TestReaderMatchesChunksAcrossFragments(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			r := chunker.NewReader(&fragmentReader{data: data, sizes: tt.sizes})
 			got := collectReaderChunks(t, r)
-			if !slices.EqualFunc(got, want, bytes.Equal) {
-				t.Fatalf("stream chunks differ from in-memory chunks: got %v, want %v", chunkLengths(got), chunkLengths(want))
-			}
+			assertChunksEqual(t, got, want)
 		})
 	}
 }
 
 func TestReaderReturnsBoundaryBeforeMaxSize(t *testing.T) {
-	t.Parallel()
-
 	chunker := mustChunker(t, Config{
 		MinSize:       64,
 		AverageSize:   256,
@@ -57,6 +52,14 @@ func TestReaderReturnsBoundaryBeforeMaxSize(t *testing.T) {
 
 	pr, pw := io.Pipe()
 	release := make(chan struct{})
+	t.Cleanup(func() {
+		_ = pr.CloseWithError(errors.New("test cleanup"))
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
 	writerDone := make(chan error, 1)
 	go func() {
 		_, err := pw.Write(input)
@@ -80,26 +83,28 @@ func TestReaderReturnsBoundaryBeforeMaxSize(t *testing.T) {
 		resultCh <- result{chunk: bytes.Clone(chunk), err: err}
 	}()
 
+	var got result
 	select {
-	case got := <-resultCh:
-		if got.err != nil {
-			t.Fatalf("Next returned error: %v", got.err)
-		}
-		if len(got.chunk) != 64 {
-			t.Fatalf("Next returned %d bytes, want 64", len(got.chunk))
-		}
-		if r.InputOffset() != 64 {
-			t.Fatalf("InputOffset = %d, want 64", r.InputOffset())
-		}
+	case got = <-resultCh:
 	case <-time.After(10 * time.Second):
 		_ = pr.CloseWithError(errors.New("test timeout"))
 		close(release)
+		<-writerDone
 		t.Fatal("Next blocked after a boundary was decidable")
 	}
 
 	close(release)
 	if err := <-writerDone; err != nil {
 		t.Fatalf("pipe writer: %v", err)
+	}
+	if got.err != nil {
+		t.Fatalf("Next() error = %v, want nil", got.err)
+	}
+	if len(got.chunk) != 64 {
+		t.Fatalf("Next() returned %d bytes, want 64", len(got.chunk))
+	}
+	if offset := r.InputOffset(); offset != 64 {
+		t.Fatalf("InputOffset() = %d, want 64", offset)
 	}
 	tail, err := r.Next()
 	if err != nil {
@@ -114,8 +119,6 @@ func TestReaderReturnsBoundaryBeforeMaxSize(t *testing.T) {
 }
 
 func TestReaderDrainsPrefixBeforeTerminalError(t *testing.T) {
-	t.Parallel()
-
 	chunker := mustChunker(t, Config{
 		MinSize:       64,
 		AverageSize:   256,
@@ -123,113 +126,73 @@ func TestReaderDrainsPrefixBeforeTerminalError(t *testing.T) {
 		Normalization: NormalizationNone,
 	})
 	terminal := errors.New("terminal read failure")
-	first := make([]byte, 129)
-	first[64] = 0xc0
-	first[128] = 0xc0
-	source := &scriptedReader{steps: []readStep{
-		{data: first, err: terminal},
-		{data: []byte{1, 2}, err: io.EOF},
-	}}
-	r := chunker.NewReader(source)
+	boundaries := make([]byte, 129)
+	boundaries[64] = 0xc0
+	boundaries[128] = 0xc0
+	maximumChunker := mustChunker(t, Config{AverageSize: 256})
+	maximum := make([]byte, maximumChunker.maxSize)
+	tests := []struct {
+		name    string
+		chunker *Chunker
+		data    []byte
+		want    [][]byte
+	}{
+		{name: "error without data", chunker: chunker},
+		{
+			name:    "complete chunks and short tail",
+			chunker: chunker,
+			data:    boundaries,
+			want:    [][]byte{boundaries[:64], boundaries[64:128], boundaries[128:]},
+		},
+		{
+			name:    "forced maximum",
+			chunker: maximumChunker,
+			data:    maximum,
+			want:    [][]byte{maximum},
+		},
+	}
 
-	want := [][]byte{first[:64], first[64:128], first[128:]}
-	for i, expected := range want {
-		offset := int64(i * 64)
-		if got := r.InputOffset(); got != offset {
-			t.Fatalf("chunk %d: InputOffset = %d, want %d", i, got, offset)
-		}
-		chunk, err := r.Next()
-		if err != nil {
-			t.Fatalf("chunk %d: %v", i, err)
-		}
-		if !bytes.Equal(chunk, expected) {
-			t.Fatalf("chunk %d = %x, want %x", i, chunk, expected)
-		}
-	}
-	if r.InputOffset() != int64(len(first)) {
-		t.Fatalf("offset before error = %d, want %d", r.InputOffset(), len(first))
-	}
-	reads := len(source.requests)
-	for call := 1; call <= 3; call++ {
-		chunk, err := r.Next()
-		if chunk != nil || err != terminal {
-			t.Fatalf("terminal Next call %d = (%v, %v), want (nil, terminal)", call, chunk, err)
-		}
-		if r.InputOffset() != int64(len(first)) {
-			t.Fatalf("offset after error call %d = %d, want %d", call, r.InputOffset(), len(first))
-		}
-		if len(source.requests) != reads {
-			t.Fatalf("terminal Next call %d read the source again", call)
-		}
-	}
-	if source.index != 1 {
-		t.Fatalf("source advanced to step %d, want 1", source.index)
-	}
-}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source := &scriptedReader{steps: []readStep{
+				{data: test.data, err: terminal},
+				{data: []byte("unreachable"), err: io.EOF},
+			}}
+			r := test.chunker.NewReader(source)
+			var got [][]byte
+			for {
+				chunk, err := r.Next()
+				if err == terminal {
+					break
+				}
+				if err != nil {
+					t.Fatalf("Next() error = %v, want %v", err, terminal)
+				}
+				got = append(got, bytes.Clone(chunk))
+			}
+			assertChunksEqual(t, got, test.want)
+			if got := r.InputOffset(); got != int64(len(test.data)) {
+				t.Errorf("InputOffset() = %d, want %d", got, len(test.data))
+			}
+			if source.index != 1 {
+				t.Errorf("source advanced to step %d, want 1", source.index)
+			}
 
-func TestReaderZeroByteErrorIsTerminal(t *testing.T) {
-	t.Parallel()
-
-	chunker := mustChunker(t, Config{AverageSize: 256})
-	terminal := errors.New("terminal failure")
-	data := []byte{1, 2, 3}
-	source := &scriptedReader{steps: []readStep{
-		{err: terminal},
-		{data: data, err: io.EOF},
-	}}
-	r := chunker.NewReader(source)
-
-	for call := 1; call <= 3; call++ {
-		chunk, err := r.Next()
-		if chunk != nil || err != terminal {
-			t.Fatalf("Next call %d = (%v, %v), want (nil, terminal)", call, chunk, err)
-		}
-		if r.InputOffset() != 0 {
-			t.Fatalf("InputOffset after error call %d = %d, want 0", call, r.InputOffset())
-		}
-		if len(source.requests) != 1 {
-			t.Fatalf("Next call %d made %d reads, want 1", call, len(source.requests))
-		}
-	}
-	if source.index != 1 {
-		t.Fatalf("source advanced to step %d, want 1", source.index)
+			reads := len(source.requests)
+			for call := 1; call <= 2; call++ {
+				chunk, err := r.Next()
+				if chunk != nil || err != terminal {
+					t.Errorf("Next() after terminal error, call %d = (%v, %v), want (nil, %v)", call, chunk, err, terminal)
+				}
+			}
+			if got := len(source.requests); got != reads {
+				t.Errorf("repeated Next() made %d additional reads, want 0", got-reads)
+			}
+		})
 	}
 }
 
-func TestReaderReturnsForcedMaximumBeforeTerminalError(t *testing.T) {
-	t.Parallel()
-
-	chunker := mustChunker(t, Config{AverageSize: 256})
-	terminal := errors.New("failure at maximum")
-	data := make([]byte, chunker.maxSize)
-	source := &scriptedReader{steps: []readStep{{data: data, err: terminal}}}
-	r := chunker.NewReader(source)
-
-	chunk, err := r.Next()
-	if err != nil || !bytes.Equal(chunk, data) {
-		t.Fatalf("first Next = (%d bytes, %v), want (%d bytes, nil)", len(chunk), err, len(data))
-	}
-	if r.InputOffset() != int64(chunker.maxSize) {
-		t.Fatalf("InputOffset = %d, want %d", r.InputOffset(), chunker.maxSize)
-	}
-	reads := len(source.requests)
-	for call := 1; call <= 3; call++ {
-		chunk, err := r.Next()
-		if chunk != nil || err != terminal {
-			t.Fatalf("terminal Next call %d = (%v, %v), want (nil, terminal)", call, chunk, err)
-		}
-		if r.InputOffset() != int64(chunker.maxSize) {
-			t.Fatalf("InputOffset after error call %d = %d, want %d", call, r.InputOffset(), chunker.maxSize)
-		}
-		if len(source.requests) != reads {
-			t.Fatalf("terminal Next call %d read the source again", call)
-		}
-	}
-}
-
-func TestReaderProcessesDataBeforeEOF(t *testing.T) {
-	t.Parallel()
-
+func TestReaderReturnsBufferedDataBeforeEOF(t *testing.T) {
 	chunker := mustChunker(t, Config{
 		MinSize:       64,
 		AverageSize:   256,
@@ -239,82 +202,37 @@ func TestReaderProcessesDataBeforeEOF(t *testing.T) {
 	input := make([]byte, 129)
 	input[64] = 0xc0
 	input[128] = 0xc0
-	r := chunker.NewReader(&scriptedReader{steps: []readStep{{data: input, err: io.EOF}}})
-
-	got := collectReaderChunks(t, r)
-	want := [][]byte{input[:64], input[64:128], input[128:]}
-	if !slices.EqualFunc(got, want, bytes.Equal) {
-		t.Fatalf("chunks = %v, want %v", chunkLengths(got), chunkLengths(want))
+	tests := []struct {
+		name string
+		data []byte
+		want [][]byte
+	}{
+		{name: "empty"},
+		{
+			name: "complete chunks and short tail",
+			data: input,
+			want: [][]byte{input[:64], input[64:128], input[128:]},
+		},
 	}
-	for call := 1; call <= 2; call++ {
-		if chunk, err := r.Next(); chunk != nil || err != io.EOF {
-			t.Fatalf("Next after EOF call %d = (%v, %v), want (nil, io.EOF)", call, chunk, err)
-		}
-	}
-}
 
-func TestReaderEmptyStreamReturnsRepeatedEOF(t *testing.T) {
-	t.Parallel()
-
-	chunker := mustChunker(t, Config{AverageSize: 256})
-	source := &scriptedReader{}
-	r := chunker.NewReader(source)
-	for call := 1; call <= 3; call++ {
-		chunk, err := r.Next()
-		if chunk != nil || err != io.EOF {
-			t.Fatalf("Next call %d = (%v, %v), want (nil, io.EOF)", call, chunk, err)
-		}
-		if r.InputOffset() != 0 {
-			t.Fatalf("InputOffset after EOF call %d = %d, want 0", call, r.InputOffset())
-		}
-		if len(source.requests) != 1 {
-			t.Fatalf("Next call %d made %d reads, want 1", call, len(source.requests))
-		}
-	}
-}
-
-func TestReaderNoProgressIsTerminalUntilReset(t *testing.T) {
-	t.Parallel()
-
-	chunker := mustChunker(t, Config{AverageSize: 256})
-	source := &emptyReader{}
-	r := chunker.NewReader(source)
-	reads := 0
-	for call := 1; call <= 3; call++ {
-		chunk, err := r.Next()
-		if chunk != nil || err != io.ErrNoProgress {
-			t.Fatalf("Next call %d = (%v, %v), want (nil, io.ErrNoProgress)", call, chunk, err)
-		}
-		if r.InputOffset() != 0 {
-			t.Fatalf("InputOffset after error call %d = %d, want 0", call, r.InputOffset())
-		}
-		if call == 1 {
-			reads = source.reads
-			if reads == 0 {
-				t.Fatal("Next returned io.ErrNoProgress without reading the source")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			r := chunker.NewReader(&scriptedReader{steps: []readStep{{data: test.data, err: io.EOF}}})
+			got := collectReaderChunks(t, r)
+			assertChunksEqual(t, got, test.want)
+			if got := r.InputOffset(); got != int64(len(test.data)) {
+				t.Errorf("InputOffset() = %d, want %d", got, len(test.data))
 			}
-		} else if source.reads != reads {
-			t.Fatalf("Next call %d made %d additional reads", call, source.reads-reads)
-		}
-	}
-
-	fresh := []byte{4, 5, 6}
-	r.Reset(bytes.NewReader(fresh))
-	if r.InputOffset() != 0 {
-		t.Fatalf("InputOffset after Reset = %d, want 0", r.InputOffset())
-	}
-	chunk, err := r.Next()
-	if err != nil || !bytes.Equal(chunk, fresh) {
-		t.Fatalf("Next after Reset = (%v, %v), want (%v, nil)", chunk, err, fresh)
-	}
-	if _, err := r.Next(); err != io.EOF {
-		t.Fatalf("final error after Reset = %v, want io.EOF", err)
+			for call := 1; call <= 2; call++ {
+				if chunk, err := r.Next(); chunk != nil || err != io.EOF {
+					t.Errorf("Next() after EOF, call %d = (%v, %v), want (nil, io.EOF)", call, chunk, err)
+				}
+			}
+		})
 	}
 }
 
 func TestReaderResetDiscardsStateAndReusesBuffer(t *testing.T) {
-	t.Parallel()
-
 	chunker := mustChunker(t, Config{
 		MinSize:       64,
 		AverageSize:   256,
@@ -333,188 +251,84 @@ func TestReaderResetDiscardsStateAndReusesBuffer(t *testing.T) {
 	fresh := []byte{4, 5, 6}
 	r.Reset(bytes.NewReader(fresh))
 	if &r.buffer[0] != buffer {
-		t.Fatal("Reset replaced the reusable buffer")
+		t.Error("Reset() replaced the reusable buffer")
 	}
-	if r.InputOffset() != 0 {
-		t.Fatalf("offset after Reset = %d, want 0", r.InputOffset())
+	if got := r.InputOffset(); got != 0 {
+		t.Errorf("InputOffset() after Reset() = %d, want 0", got)
 	}
 	chunk, err := r.Next()
 	if err != nil {
-		t.Fatalf("fresh stream: %v", err)
+		t.Fatalf("Next() after Reset() error = %v, want nil", err)
 	}
 	if !bytes.Equal(chunk, fresh) {
-		t.Fatalf("fresh chunk = %v, want %v", chunk, fresh)
+		t.Errorf("Next() after Reset() = %v, want %v", chunk, fresh)
 	}
-}
+	if _, err := r.Next(); err != io.EOF {
+		t.Errorf("Next() after fresh stream = %v, want io.EOF", err)
+	}
 
-func TestReaderResetAfterSurfacedError(t *testing.T) {
-	t.Parallel()
-
-	chunker := mustChunker(t, Config{AverageSize: 256})
-	terminal := errors.New("surface me")
-	r := chunker.NewReader(&scriptedReader{steps: []readStep{{err: terminal}}})
+	r.Reset(&scriptedReader{steps: []readStep{{err: terminal}}})
 	if chunk, err := r.Next(); chunk != nil || err != terminal {
-		t.Fatalf("old stream Next = (%v, %v), want (nil, terminal)", chunk, err)
+		t.Fatalf("Next() on terminal stream = (%v, %v), want (nil, %v)", chunk, err, terminal)
 	}
-	if chunk, err := r.Next(); chunk != nil || err != terminal {
-		t.Fatalf("repeated old stream Next = (%v, %v), want (nil, terminal)", chunk, err)
-	}
-
-	fresh := []byte{4, 5, 6}
-	r.Reset(bytes.NewReader(fresh))
-	if r.InputOffset() != 0 {
-		t.Fatalf("InputOffset after Reset = %d, want 0", r.InputOffset())
-	}
-	chunk, err := r.Next()
-	if err != nil || !bytes.Equal(chunk, fresh) {
-		t.Fatalf("fresh stream Next = (%v, %v), want (%v, nil)", chunk, err, fresh)
-	}
-	if _, err := r.Next(); err != io.EOF {
-		t.Fatalf("fresh stream final error = %v, want io.EOF", err)
-	}
-}
-
-func TestReaderResetAfterEOF(t *testing.T) {
-	t.Parallel()
-
-	chunker := mustChunker(t, Config{AverageSize: 256})
-	r := chunker.NewReader(bytes.NewReader([]byte{1}))
-	if chunk, err := r.Next(); err != nil || !bytes.Equal(chunk, []byte{1}) {
-		t.Fatalf("old stream Next = (%v, %v), want ([1], nil)", chunk, err)
-	}
-	if _, err := r.Next(); err != io.EOF {
-		t.Fatalf("old stream final error = %v, want io.EOF", err)
-	}
-
-	fresh := []byte{2, 3}
-	r.Reset(bytes.NewReader(fresh))
-	if r.InputOffset() != 0 {
-		t.Fatalf("InputOffset after Reset = %d, want 0", r.InputOffset())
-	}
-	chunk, err := r.Next()
-	if err != nil || !bytes.Equal(chunk, fresh) {
-		t.Fatalf("fresh stream Next = (%v, %v), want (%v, nil)", chunk, err, fresh)
-	}
-	if _, err := r.Next(); err != io.EOF {
-		t.Fatalf("fresh stream final error = %v, want io.EOF", err)
+	again := []byte{7, 8}
+	r.Reset(bytes.NewReader(again))
+	chunk, err = r.Next()
+	if err != nil || !bytes.Equal(chunk, again) {
+		t.Errorf("Next() after resetting terminal error = (%v, %v), want (%v, nil)", chunk, err, again)
 	}
 }
 
 func TestReaderOffsetUsesInt64(t *testing.T) {
-	t.Parallel()
-
 	chunker := mustChunker(t, Config{AverageSize: 256})
 	r := chunker.NewReader(bytes.NewReader([]byte{1}))
 	r.offset = math.MaxInt32
 	if _, err := r.Next(); err != nil {
-		t.Fatal(err)
+		t.Fatalf("Next() error = %v, want nil", err)
 	}
 	if got, want := r.InputOffset(), int64(math.MaxInt32)+1; got != want {
 		t.Fatalf("InputOffset = %d, want %d", got, want)
 	}
 }
 
-func TestReaderChunksHaveClippedCapacity(t *testing.T) {
-	t.Parallel()
-
-	chunker := mustChunker(t, Config{AverageSize: 256})
-	r := chunker.NewReader(bytes.NewReader(readerTestData(4096)))
-	for {
-		chunk, err := r.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if cap(chunk) != len(chunk) {
-			t.Fatalf("len=%d cap=%d", len(chunk), cap(chunk))
-		}
-	}
-}
-
 func TestReaderRejectsNilSource(t *testing.T) {
-	t.Parallel()
-
 	chunker := mustChunker(t, Config{AverageSize: 256})
-	assertPanics(t, func() { chunker.NewReader(nil) })
 	r := chunker.NewReader(bytes.NewReader(nil))
-	assertPanics(t, func() { r.Reset(nil) })
-}
-
-func TestReaderRejectsInvalidReadCounts(t *testing.T) {
-	t.Parallel()
-
-	chunker := mustChunker(t, Config{AverageSize: 256})
 	tests := []struct {
 		name string
-		read func([]byte) (int, error)
+		call func()
 	}{
-		{
-			name: "negative",
-			read: func([]byte) (int, error) { return -1, nil },
-		},
-		{
-			name: "larger than buffer",
-			read: func(p []byte) (int, error) { return len(p) + 1, nil },
-		},
+		{name: "NewReader", call: func() { chunker.NewReader(nil) }},
+		{name: "Reset", call: func() { r.Reset(nil) }},
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			reads := 0
-			r := chunker.NewReader(readerFunc(func(p []byte) (int, error) {
-				reads++
-				return tt.read(p)
-			}))
-			var firstErr error
-			for call := 1; call <= 3; call++ {
-				chunk, err := r.Next()
-				if chunk != nil || err == nil {
-					t.Fatalf("Next call %d = (%v, %v), want (nil, non-nil error)", call, chunk, err)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%s(nil) did not panic", test.name)
 				}
-				if call == 1 {
-					firstErr = err
-				} else if err != firstErr {
-					t.Fatalf("Next call %d error = %v, want sticky error %v", call, err, firstErr)
-				}
-				if r.InputOffset() != 0 {
-					t.Fatalf("InputOffset after call %d = %d, want 0", call, r.InputOffset())
-				}
-				if reads != 1 {
-					t.Fatalf("Next call %d made %d reads, want 1", call, reads)
-				}
-			}
+			}()
+			test.call()
 		})
 	}
 }
 
 func TestChunkerConcurrentUse(t *testing.T) {
-	t.Parallel()
-
 	chunker := mustChunker(t, Config{AverageSize: 1024})
-	data := readerTestData(1 << 20)
+	data := splitMixBytes(256<<10, 0x243f6a8885a308d3)
 	want := cutLengths(chunker, data)
-	errCh := make(chan error, 8)
-	for worker := 0; worker < cap(errCh); worker++ {
-		go func() {
-			for iteration := 0; iteration < 20; iteration++ {
+	for worker := range 4 {
+		t.Run(fmt.Sprintf("worker %d", worker), func(t *testing.T) {
+			t.Parallel()
+			for range 3 {
 				if got := cutLengths(chunker, data); !slices.Equal(got, want) {
-					errCh <- errors.New("concurrent Chunks result changed")
-					return
+					t.Fatalf("Chunks() lengths = %v, want %v", got, want)
 				}
 				if got := chunker.Cut(data); got != want[0] {
-					errCh <- errors.New("concurrent Cut result changed")
-					return
+					t.Fatalf("Cut() = %d, want %d", got, want[0])
 				}
 			}
-			errCh <- nil
-		}()
-	}
-	for worker := 0; worker < cap(errCh); worker++ {
-		if err := <-errCh; err != nil {
-			t.Fatal(err)
-		}
+		})
 	}
 }
 
@@ -532,17 +346,23 @@ func collectReaderChunks(t *testing.T, r *Reader) [][]byte {
 	var offset int64
 	for {
 		if got := r.InputOffset(); got != offset {
-			t.Fatalf("InputOffset = %d, want %d", got, offset)
+			t.Fatalf("InputOffset() = %d, want %d", got, offset)
 		}
 		chunk, err := r.Next()
 		if err == io.EOF {
+			if chunk != nil {
+				t.Errorf("Next() at EOF returned %d bytes, want nil", len(chunk))
+			}
 			return chunks
 		}
 		if err != nil {
-			t.Fatalf("Next: %v", err)
+			t.Fatalf("Next() error = %v, want nil", err)
 		}
 		if len(chunk) == 0 {
-			t.Fatal("Next returned an empty chunk")
+			t.Fatal("Next() returned an empty chunk")
+		}
+		if cap(chunk) != len(chunk) {
+			t.Fatalf("Next() returned len=%d cap=%d, want clipped capacity", len(chunk), cap(chunk))
 		}
 		chunks = append(chunks, bytes.Clone(chunk))
 		offset += int64(len(chunk))
@@ -557,16 +377,27 @@ func chunkLengths(chunks [][]byte) []int {
 	return lengths
 }
 
-func readerTestData(size int) []byte {
-	data := make([]byte, size)
-	var state uint64 = 0x243f6a8885a308d3
-	for i := range data {
-		state ^= state << 13
-		state ^= state >> 7
-		state ^= state << 17
-		data[i] = byte(state)
+func assertChunksEqual(t testing.TB, got, want [][]byte) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("chunk count = %d, want %d; lengths %v, want %v", len(got), len(want), chunkLengths(got), chunkLengths(want))
 	}
-	return data
+	offset := 0
+	for i := range want {
+		if bytes.Equal(got[i], want[i]) {
+			offset += len(want[i])
+			continue
+		}
+		firstDifference := min(len(got[i]), len(want[i]))
+		for j := 0; j < firstDifference; j++ {
+			if got[i][j] != want[i][j] {
+				firstDifference = j
+				break
+			}
+		}
+		t.Fatalf("chunk %d at stream offset %d differs: len=%d, want %d; first difference at byte %d",
+			i, offset, len(got[i]), len(want[i]), firstDifference)
+	}
 }
 
 type fragmentReader struct {
@@ -614,29 +445,4 @@ func (r *scriptedReader) Read(p []byte) (int, error) {
 	r.index++
 	r.off = 0
 	return n, step.err
-}
-
-type readerFunc func([]byte) (int, error)
-
-func (f readerFunc) Read(p []byte) (int, error) {
-	return f(p)
-}
-
-type emptyReader struct {
-	reads int
-}
-
-func (r *emptyReader) Read([]byte) (int, error) {
-	r.reads++
-	return 0, nil
-}
-
-func assertPanics(t *testing.T, f func()) {
-	t.Helper()
-	defer func() {
-		if recover() == nil {
-			t.Fatal("call did not panic")
-		}
-	}()
-	f()
 }

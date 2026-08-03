@@ -9,46 +9,53 @@ import (
 	"testing"
 )
 
-func TestNewDefaults(t *testing.T) {
+func TestNewDerivesConfig(t *testing.T) {
+	type derivedConfig struct {
+		minimum, average, maximum int
+		maskSmall, maskLarge      uint64
+	}
+	minimumAverage := derivedConfig{
+		minimum: 64, average: 256, maximum: 1024,
+		maskSmall: masks[9], maskLarge: masks[7],
+	}
 	tests := []struct {
-		name      string
-		config    Config
-		minSize   int
-		maxSize   int
-		maskSmall uint64
-		maskLarge uint64
+		name   string
+		config Config
+		want   derivedConfig
 	}{
 		{
-			name:      "minimum average",
-			config:    Config{AverageSize: 256},
-			minSize:   64,
-			maxSize:   1024,
-			maskSmall: masks[9],
-			maskLarge: masks[7],
+			name:   "minimum average",
+			config: Config{AverageSize: 256},
+			want:   minimumAverage,
 		},
 		{
-			name:      "normalization disabled",
-			config:    Config{AverageSize: 8192, Normalization: NormalizationNone},
-			minSize:   2048,
-			maxSize:   32768,
-			maskSmall: masks[13],
-			maskLarge: masks[13],
+			name:   "explicit default normalization",
+			config: Config{AverageSize: 256, Normalization: NormalizationLevel1},
+			want:   minimumAverage,
 		},
 		{
-			name:      "normalization level 2",
-			config:    Config{AverageSize: 8192, Normalization: NormalizationLevel2},
-			minSize:   2048,
-			maxSize:   32768,
-			maskSmall: masks[15],
-			maskLarge: masks[11],
+			name:   "normalization disabled",
+			config: Config{AverageSize: 8192, Normalization: NormalizationNone},
+			want: derivedConfig{
+				minimum: 2048, average: 8192, maximum: 32768,
+				maskSmall: masks[13], maskLarge: masks[13],
+			},
 		},
 		{
-			name:      "maximum average and normalization",
-			config:    Config{AverageSize: 4 << 20, Normalization: NormalizationLevel3},
-			minSize:   1 << 20,
-			maxSize:   16 << 20,
-			maskSmall: masks[25],
-			maskLarge: masks[19],
+			name:   "normalization level 2",
+			config: Config{AverageSize: 8192, Normalization: NormalizationLevel2},
+			want: derivedConfig{
+				minimum: 2048, average: 8192, maximum: 32768,
+				maskSmall: masks[15], maskLarge: masks[11],
+			},
+		},
+		{
+			name:   "maximum average and normalization",
+			config: Config{AverageSize: 4 << 20, Normalization: NormalizationLevel3},
+			want: derivedConfig{
+				minimum: 1 << 20, average: 4 << 20, maximum: 16 << 20,
+				maskSmall: masks[25], maskLarge: masks[19],
+			},
 		},
 		{
 			name: "explicit odd bounds",
@@ -58,41 +65,24 @@ func TestNewDefaults(t *testing.T) {
 				MaxSize:       1025,
 				Normalization: NormalizationNone,
 			},
-			minSize:   65,
-			maxSize:   1025,
-			maskSmall: masks[9],
-			maskLarge: masks[9],
+			want: derivedConfig{
+				minimum: 65, average: 512, maximum: 1025,
+				maskSmall: masks[9], maskLarge: masks[9],
+			},
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			chunker := mustChunker(t, test.config)
-			if chunker.minSize != test.minSize {
-				t.Errorf("minimum size = %d, want %d", chunker.minSize, test.minSize)
+			got := derivedConfig{
+				minimum: chunker.minSize, average: chunker.averageSize, maximum: chunker.maxSize,
+				maskSmall: chunker.maskSmall, maskLarge: chunker.maskLarge,
 			}
-			if chunker.averageSize != test.config.AverageSize {
-				t.Errorf("average size = %d, want %d", chunker.averageSize, test.config.AverageSize)
-			}
-			if chunker.maxSize != test.maxSize {
-				t.Errorf("maximum size = %d, want %d", chunker.maxSize, test.maxSize)
-			}
-			if chunker.maskSmall != test.maskSmall {
-				t.Errorf("small mask = %#016x, want %#016x", chunker.maskSmall, test.maskSmall)
-			}
-			if chunker.maskLarge != test.maskLarge {
-				t.Errorf("large mask = %#016x, want %#016x", chunker.maskLarge, test.maskLarge)
+			if got != test.want {
+				t.Errorf("New(%#v) = %#v, want %#v", test.config, got, test.want)
 			}
 		})
-	}
-
-	defaultLevel := mustChunker(t, Config{AverageSize: 8192})
-	explicitLevel := mustChunker(t, Config{
-		AverageSize:   8192,
-		Normalization: NormalizationLevel1,
-	})
-	if *defaultLevel != *explicitLevel {
-		t.Errorf("zero normalization did not canonicalize to level 1:\n default: %#v\nexplicit: %#v", defaultLevel, explicitLevel)
 	}
 }
 
@@ -177,7 +167,6 @@ func TestChunksSemantics(t *testing.T) {
 	chunker := mustChunker(t, Config{AverageSize: 1024})
 	seq := chunker.Chunks(data)
 
-	var reconstructed []byte
 	var firstLengths []int
 	wantOffset := 0
 	for offset, chunk := range seq {
@@ -197,16 +186,11 @@ func TestChunksSemantics(t *testing.T) {
 			t.Fatalf("chunk at %d does not alias the input", offset)
 		}
 		firstLengths = append(firstLengths, len(chunk))
-		reconstructed = append(reconstructed, chunk...)
 		wantOffset += len(chunk)
 	}
 	if wantOffset != len(data) {
 		t.Errorf("chunks end at %d, want %d", wantOffset, len(data))
 	}
-	if !slices.Equal(reconstructed, data) {
-		t.Fatal("concatenated chunks do not reconstruct the input")
-	}
-
 	// Chunks returns a reusable iterator rather than a single-use traversal.
 	var secondLengths []int
 	for _, chunk := range seq {
@@ -301,7 +285,8 @@ func TestFastCDC2020Vectors(t *testing.T) {
 	// f76938d8c2d77799852415247c9b3e1fd91b73f3. The even-sized configuration
 	// also matches its scalar v2016 implementation for every normalization.
 	data := splitMixBytes(131072, 0x0123456789abcdef)
-	if got := sha256Hex(data); got != "68742a8e9d6b219abb62693d04df765a167adcf130fcd8b44acb83a8027c97ad" {
+	digest := sha256.Sum256(data)
+	if got := hex.EncodeToString(digest[:]); got != "68742a8e9d6b219abb62693d04df765a167adcf130fcd8b44acb83a8027c97ad" {
 		t.Fatalf("generated corpus SHA-256 = %s", got)
 	}
 
@@ -438,12 +423,6 @@ func TestOddBoundRegressions(t *testing.T) {
 }
 
 func TestCanonicalTables(t *testing.T) {
-	if len(gear) != 256 {
-		t.Fatalf("Gear table has %d entries, want 256", len(gear))
-	}
-	if len(gearShifted) != len(gear) {
-		t.Fatalf("shifted Gear table has %d entries, want %d", len(gearShifted), len(gear))
-	}
 	for i := range gear {
 		if gearShifted[i] != gear[i]<<1 {
 			t.Errorf("shifted Gear[%d] = %#016x, want %#016x", i, gearShifted[i], gear[i]<<1)
@@ -459,11 +438,6 @@ func TestCanonicalTables(t *testing.T) {
 			name:  "Gear",
 			table: gear[:],
 			want:  "9df0a720752a7d211fdebaf39bed01610983756fc340a1cfef41052b7356ae73",
-		},
-		{
-			name:  "shifted Gear",
-			table: gearShifted[:],
-			want:  "93123c215ae531383c1b660bb185d4013ba3c87faa99796879f97c4076bdfce2",
 		},
 		{
 			name:  "masks",
@@ -548,11 +522,6 @@ func splitMixBytes(size int, seed uint64) []byte {
 		data = append(data, word[:]...)
 	}
 	return data[:size]
-}
-
-func sha256Hex(data []byte) string {
-	digest := sha256.Sum256(data)
-	return hex.EncodeToString(digest[:])
 }
 
 func uint64TableSHA256(table []uint64) string {

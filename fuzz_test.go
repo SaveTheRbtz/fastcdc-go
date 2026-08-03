@@ -3,27 +3,30 @@ package fastcdc
 import (
 	"bytes"
 	"errors"
-	"slices"
 	"testing"
 )
 
+var fuzzNormalizations = [...]Normalization{
+	NormalizationNone,
+	0,
+	NormalizationLevel1,
+	NormalizationLevel2,
+	NormalizationLevel3,
+}
+
 func FuzzCutMatchesScalar(f *testing.F) {
 	f.Add([]byte(nil), uint8(0), uint16(0), uint16(0), uint8(0))
-	f.Add(make([]byte, 1024), uint8(0), uint16(64), uint16(1024), uint8(1))
+	// Average 256, minimum 64, maximum 1024, default normalization.
+	f.Add(make([]byte, 1024), uint8(0), uint16(63), uint16(767), uint8(1))
 	boundary := make([]byte, 1024)
 	boundary[64] = 0xc0
-	f.Add(boundary, uint8(0), uint16(65), uint16(1025), uint8(0))
-	f.Add(splitMixBytes(2048, 2128), uint8(1), uint16(65), uint16(1025), uint8(3))
-	f.Add(splitMixBytes(257, 588), uint8(1), uint16(65), uint16(1025), uint8(4))
+	// Average 256, odd minimum 65, odd maximum 1025, no normalization.
+	f.Add(boundary, uint8(0), uint16(64), uint16(768), uint8(0))
+	// Average 512, odd minimum 65, odd maximum 1025.
+	f.Add(splitMixBytes(2048, 2128), uint8(1), uint16(64), uint16(512), uint8(3))
+	f.Add(splitMixBytes(257, 588), uint8(1), uint16(64), uint16(512), uint8(4))
 
 	averages := [...]int{256, 512, 1024, 2048, 4096, 8192, 16384}
-	normalizations := [...]Normalization{
-		NormalizationNone,
-		0,
-		NormalizationLevel1,
-		NormalizationLevel2,
-		NormalizationLevel3,
-	}
 	f.Fuzz(func(t *testing.T, data []byte, averageIndex uint8, rawMin, rawMax uint16, normalizationIndex uint8) {
 		if len(data) > 4<<10 {
 			t.Skip()
@@ -35,7 +38,7 @@ func FuzzCutMatchesScalar(f *testing.F) {
 			MinSize:       minSize,
 			AverageSize:   average,
 			MaxSize:       maxSize,
-			Normalization: normalizations[int(normalizationIndex)%len(normalizations)],
+			Normalization: fuzzNormalizations[int(normalizationIndex)%len(fuzzNormalizations)],
 		})
 
 		if got, want := chunker.Cut(data), scalarCut(chunker, data); got != want {
@@ -46,6 +49,9 @@ func FuzzCutMatchesScalar(f *testing.F) {
 		for chunkOffset, chunk := range chunker.Chunks(data) {
 			if chunkOffset != offset || len(chunk) == 0 || cap(chunk) != len(chunk) {
 				t.Fatalf("invalid chunk at offset %d: yielded offset=%d len=%d cap=%d", offset, chunkOffset, len(chunk), cap(chunk))
+			}
+			if want := scalarCut(chunker, data[offset:]); len(chunk) != want {
+				t.Fatalf("chunk at offset %d has length %d, scalarCut = %d", offset, len(chunk), want)
 			}
 			offset += len(chunk)
 		}
@@ -63,13 +69,6 @@ func FuzzReaderMatchesChunks(f *testing.F) {
 	f.Add(boundary, []byte{64, 1}, uint8(0))
 	f.Add(splitMixBytes(4096, 0x0123456789abcdef), []byte{1, 2, 3, 5, 8, 13}, uint8(4))
 
-	normalizations := [...]Normalization{
-		NormalizationNone,
-		0,
-		NormalizationLevel1,
-		NormalizationLevel2,
-		NormalizationLevel3,
-	}
 	f.Fuzz(func(t *testing.T, data, fragmentBytes []byte, normalizationIndex uint8) {
 		if len(data) > 4<<10 || len(fragmentBytes) > 32 {
 			t.Skip()
@@ -85,13 +84,11 @@ func FuzzReaderMatchesChunks(f *testing.F) {
 			MinSize:       65,
 			AverageSize:   256,
 			MaxSize:       1025,
-			Normalization: normalizations[int(normalizationIndex)%len(normalizations)],
+			Normalization: fuzzNormalizations[int(normalizationIndex)%len(fuzzNormalizations)],
 		})
 		want := collectMemoryChunks(chunker, data)
 		got := collectReaderChunks(t, chunker.NewReader(&fragmentReader{data: data, sizes: sizes}))
-		if !slices.EqualFunc(got, want, bytes.Equal) {
-			t.Fatalf("stream chunks %v differ from slice chunks %v", chunkLengths(got), chunkLengths(want))
-		}
+		assertChunksEqual(t, got, want)
 	})
 }
 
@@ -103,13 +100,6 @@ func FuzzReaderTerminalErrors(f *testing.F) {
 	f.Add(boundary, []byte{64, 1}, uint16(65), uint8(0))
 	f.Add(splitMixBytes(4096, 0x0123456789abcdef), []byte{1, 2, 3, 5, 8, 13}, uint16(4096), uint8(4))
 
-	normalizations := [...]Normalization{
-		NormalizationNone,
-		0,
-		NormalizationLevel1,
-		NormalizationLevel2,
-		NormalizationLevel3,
-	}
 	f.Fuzz(func(t *testing.T, data, fragmentBytes []byte, rawPrefix uint16, normalizationIndex uint8) {
 		if len(data) > 4<<10 || len(fragmentBytes) > 32 {
 			t.Skip()
@@ -125,7 +115,7 @@ func FuzzReaderTerminalErrors(f *testing.F) {
 			MinSize:       65,
 			AverageSize:   256,
 			MaxSize:       1025,
-			Normalization: normalizations[int(normalizationIndex)%len(normalizations)],
+			Normalization: fuzzNormalizations[int(normalizationIndex)%len(fuzzNormalizations)],
 		})
 		prefixLen := int(rawPrefix) % (len(data) + 1)
 		want := collectMemoryChunks(chunker, data[:prefixLen])
@@ -162,9 +152,7 @@ func FuzzReaderTerminalErrors(f *testing.F) {
 				if source.offset != prefixLen {
 					t.Fatalf("source accepted %d bytes, want %d", source.offset, prefixLen)
 				}
-				if !slices.EqualFunc(got, want, bytes.Equal) {
-					t.Fatalf("stream chunks %v differ from slice chunks %v", chunkLengths(got), chunkLengths(want))
-				}
+				assertChunksEqual(t, got, want)
 
 				calls := source.calls
 				for range 2 {
