@@ -1,18 +1,55 @@
-name: Test and coverage
+name: Test
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
 
 jobs:
-  build:
+  test:
+    name: Go ${{ matrix.go }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ['1.23.x', stable]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go }}
+      - name: Test with the race detector
+        run: go test -race -coverprofile=coverage.txt -covermode=atomic ./...
+      - name: Check generated files
+        if: matrix.go == 'stable'
+        run: |
+          go generate ./...
+          git diff --exit-code
+      - name: Compile tests for linux/386
+        if: matrix.go == 'stable'
+        env:
+          GOOS: linux
+          GOARCH: '386'
+        run: go test -c -o /tmp/fastcdc-go-386.test .
+      - name: Upload coverage
+        if: matrix.go == 'stable'
+        uses: codecov/codecov-action@v6
+        with:
+          files: coverage.txt
+
+  fuzz:
+    name: Fuzz
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
-          fetch-depth: 2
-      - uses: actions/setup-go@v2
-        with:
-          go-version: '1.18'
-      - name: Run coverage
-        run: go test -race -coverprofile=coverage.txt -covermode=atomic
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+          go-version: stable
+      - name: Fuzz the paired scanner
+        run: go test -race -run=^$ -fuzz=FuzzCutMatchesScalar -fuzztime=15s .
+      - name: Fuzz fragmented streams
+        run: go test -race -run=^$ -fuzz=FuzzReaderMatchesChunks -fuzztime=15s .
