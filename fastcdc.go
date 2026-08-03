@@ -74,7 +74,7 @@ func New(config Config) (*Chunker, error) {
 	if maxSize > maxChunkSize {
 		return nil, fmt.Errorf("fastcdc: maximum size must not exceed 16 MiB")
 	}
-	if !(minSize < config.AverageSize && config.AverageSize < maxSize) {
+	if minSize >= config.AverageSize || config.AverageSize >= maxSize {
 		return nil, fmt.Errorf("fastcdc: sizes must satisfy MinSize < AverageSize < MaxSize")
 	}
 
