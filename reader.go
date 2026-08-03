@@ -72,10 +72,17 @@ func (r *Reader) Reset(src io.Reader) {
 	if src == nil {
 		panic("fastcdc: nil io.Reader")
 	}
+
+	chunker := r.chunker
+	buffer := r.buffer
 	scanner := bufio.NewScanner(src)
-	scanner.Buffer(r.buffer, r.chunker.maxSize)
+	scanner.Buffer(buffer, chunker.maxSize)
 	scanner.Split(r.split)
-	r.scanner = scanner
-	r.offset = 0
-	r.scan.reset(r.chunker.minSize)
+
+	*r = Reader{
+		chunker: chunker,
+		scanner: scanner,
+		buffer:  buffer,
+		scan:    scanState{position: chunker.minSize},
+	}
 }
