@@ -1,103 +1,149 @@
-# FastCDC-Go
+# fastcdc-go
 
-[![Docs](https://godoc.org/github.com/SaveTheRbtz/fastcdc-go?status.svg)](https://pkg.go.dev/github.com/SaveTheRbtz/fastcdc-go?tab=doc)
+[![Go Reference](https://pkg.go.dev/badge/github.com/SaveTheRbtz/fastcdc-go.svg)](https://pkg.go.dev/github.com/SaveTheRbtz/fastcdc-go)
 
-FastCDC-Go is a Go library implementing the [FastCDC](#references) content-defined chunking algorithm.
+`fastcdc-go` splits byte slices and streams into content-defined chunks with the
+FastCDC 2020 algorithm. It provides one immutable, concurrency-safe chunking
+format and small APIs for in-memory and streaming input.
 
-Install: 
+The module requires Go 1.23 or later.
+
+## Install
+
+```sh
+go get github.com/SaveTheRbtz/fastcdc-go
 ```
-go get -u github.com/SaveTheRbtz/fastcdc-go
-```
 
-## Example
+## Byte slices
+
+Use `Chunks` when the complete input is already in memory:
 
 ```go
-import (
-  "bytes"
-  "fmt"
-  "log"
-  "math/rand"
-  "io"
-
-  "github.com/SaveTheRbtz/fastcdc-go"
-)
-
-opts := fastcdc.Options{
-  MinSize:     256 * 1024
-  AverageSize: 1 * 1024 * 1024
-  MaxSize:     4 * 1024 * 1024
+chunker, err := fastcdc.New(fastcdc.Config{AverageSize: 1 << 20})
+if err != nil {
+	log.Fatal(err)
 }
 
-data := make([]byte, 10 * 1024 * 1024)
-rand.Read(data)
-chunker, _ := fastcdc.NewChunker(bytes.NewReader(data), opts)
+for offset, chunk := range chunker.Chunks(data) {
+	fmt.Printf("offset=%d size=%d\n", offset, len(chunk))
+}
+```
 
+`Chunks` returns a reusable iterator. Each chunk aliases the input slice and
+has its capacity clipped to its length. Mutating either the input or a chunk
+mutates the same storage.
+
+`Cut(data)` is the lower-level operation. It returns the length of the first
+chunk, or zero for empty input. It treats `data` as a complete input, so it
+returns a short final chunk immediately. Do not use `Cut` on an incomplete
+stream fragment; use `Reader` instead.
+
+FastCDC inspects the byte at a content-defined cut point, but that byte begins
+the next chunk. Advance by the returned length and include `data[n:]` in the
+next call. `Chunks` and `Reader` handle this convention for you.
+
+## Streams
+
+Create an independent `Reader` for each stream:
+
+```go
+reader := chunker.NewReader(src)
 for {
-  chunk, err := chunker.Next()
-  if err == io.EOF {
-    break
-  }
-  if err != nil {
-    log.Fatal(err)
-  }
+	offset := reader.InputOffset()
+	chunk, err := reader.Next()
+	if err == io.EOF {
+		break
+	}
+	if err != nil {
+		return err
+	}
 
-  fmt.Printf("%x  %d\n", chunk.Data[:10], chunk.Length)
+	if err := consume(offset, chunk); err != nil {
+		return err
+	}
 }
 ```
 
-## Command line tool
+`Next` returns non-empty chunks and reports `io.EOF` only after returning the
+final buffered bytes. The returned slice borrows the reader's fixed
+`MaxSize` buffer and remains valid only until the next call to `Next` or
+`Reset`, even if that call returns an error. Clone a chunk before retaining it:
 
-This package also includes a useful CLI for testing the chunking output. Install it by running:
-
-```
-go install ./cmd/fastcdc
-```
-
-Example:
-```bash
-# Outputs the position and size of each chunk to stdout 
-fastcdc -csv -file random.txt
+```go
+saved := bytes.Clone(chunk)
 ```
 
-## Performance
+The reader may consume input beyond the last returned chunk. `InputOffset`
+reports the logical end of that chunk, not the underlying source position.
+Abandoning the reader or calling `Reset` can therefore discard bytes already
+read from the source. The reader never closes its source.
 
-FastCDC-Go is fast. Chunking speed on an i5-10210U is >1GiB/s:
+If an underlying `Read` returns bytes and an error together, those bytes are
+kept and examined first. `Next` returns any complete chunks before reporting a
+non-EOF error. The caller may call `Next` again to resume without losing the
+buffered partial chunk. One hundred consecutive `(0, nil)` reads produce
+`io.ErrNoProgress`; the reader can still be resumed or reset.
+
+`Reader` is not safe for concurrent use and must not be copied. `Reset` reuses
+its allocation, discards buffered input and pending errors, and sets
+`InputOffset` back to zero.
+
+## Configuration
+
+`AverageSize` is the only required field:
+
+| Field | Rules and default |
+| --- | --- |
+| `AverageSize` | Power of two from 256 B through 4 MiB; required |
+| `MinSize` | Positive and less than `AverageSize`; default `AverageSize / 4` |
+| `MaxSize` | Greater than `AverageSize` and at most 16 MiB; default `AverageSize * 4` |
+| `Normalization` | Default `NormalizationLevel1` |
+
+Normalization changes the boundary mask below and above the requested average
+so chunk sizes cluster more tightly around it:
+
+| Value | Behavior |
+| --- | --- |
+| `NormalizationNone` | Disable normalization |
+| `NormalizationLevel1` | Moderate normalization; also selected by the zero value |
+| `NormalizationLevel2` | Narrower size distribution |
+| `NormalizationLevel3` | Narrowest size distribution |
+
+Higher levels trade a tighter distribution for different chunk boundaries.
+All configuration fields are part of the chunking format: use the same values
+where identical boundaries are required.
+
+A `Chunker` contains only validated, immutable state. Share it freely between
+goroutines, and create a separate `Reader` for each stream.
+
+## Command-line tool
+
+Install the included boundary-inspection tool:
+
+```sh
+go install github.com/SaveTheRbtz/fastcdc-go/cmd/fastcdc@latest
+fastcdc -file archive.img -avg 1048576
 ```
-name                speed
-FastCDCSize/1k-8    19.7GB/s ± 2%
-FastCDCSize/4k-8    53.3GB/s ± 2%
-FastCDCSize/16k-8   43.1GB/s ±11%
-FastCDCSize/32k-8   39.6GB/s ± 6%
-FastCDCSize/64k-8   39.4GB/s ± 6%
-FastCDCSize/128k-8  31.9GB/s ± 8%
-FastCDCSize/256k-8  22.6GB/s ± 3%
-FastCDCSize/512k-8  2.22GB/s ±13%
-FastCDCSize/1M-8    1.51GB/s ± 3%
-FastCDCSize/4M-8    1.23GB/s ± 4%
-FastCDCSize/16M-8   1.32GB/s ±10%
-FastCDCSize/32M-8   1.30GB/s ± 5%
-FastCDCSize/64M-8   1.34GB/s ± 0%
-FastCDCSize/128M-8  1.30GB/s ± 5%
-FastCDCSize/512M-8  1.30GB/s ± 6%
-FastCDCSize/1G-8    1.34GB/s ± 8%
-```
 
-## Normalization
+It prints each chunk's offset and size. Pass `-csv` for CSV output,
+`-normalization` for levels 1 through 3, or `-no-normalization` to disable
+normalization.
 
-A key feature of FastCDC is chunk size normalization. Normalization helps to improve the distribution of chunk sizes, increasing the number of chunks close to the target average size and reducing the number of chunks clipped by the maximum chunk size, as compared to the [Rabin-based](https://en.wikipedia.org/wiki/Rabin_fingerprint) chunking algorithm used in `restic/chunker`.
+## Compatibility
 
-The histograms below show the chunk size distribution for `fastcdc-go` and `restic/chunker` on 1GiB of random data, each with an average chunk size of 1MiB, a minimum chunk size of 256 KiB and a maximum chunk size of 4MiB. The normalization level for `fastcdc-go` is set to 2.
-
-![](./img/fastcdcgo_norm2_dist.png) ![](./img/restic_dist.png)
-
-Compared to the `restic/chunker`, the distribution of `fastcdc-go` is less skewed (standard deviation 345KiB vs. 964KiB).
-
-## License
-
-FastCDC-Go is licensed under the Apache 2.0 License. See [LICENSE](./LICENSE) for details.
+This version implements the 2020 algorithm and its canonical Gear table. It
+does not preserve the API or chunk boundaries of earlier `fastcdc-go`
+releases.
 
 ## References
 
-  - Xia, Wen, et al. "Fastcdc: a fast and efficient content-defined chunking approach for data deduplication." 2016 USENIX Annual Technical Conference
-  [pdf](https://www.usenix.org/system/files/conference/atc16/atc16-paper-xia.pdf)
+- Wen Xia et al., [FastCDC: a Fast and Efficient Content-Defined Chunking
+  Approach for Data Deduplication](https://doi.org/10.1109/TPDS.2020.2984632),
+  IEEE Transactions on Parallel and Distributed Systems, 2020.
+- Wen Xia et al., [FastCDC: a Fast and Efficient Content-Defined Chunking
+  Approach for Data Deduplication](https://www.usenix.org/system/files/conference/atc16/atc16-paper-xia.pdf),
+  USENIX ATC, 2016.
 
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
