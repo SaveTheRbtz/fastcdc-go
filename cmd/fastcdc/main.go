@@ -15,10 +15,9 @@ const miB = 1024 * kiB
 
 var fileName = flag.String("file", "", "input file (required)")
 var avgSize = flag.Int("avg", 1*miB, "average chunk size")
-var minSize = flag.Int("min", 0, "minimum chunk size. (default avg / 4)")
+var minSize = flag.Int("min", 0, "minimum chunk size (default avg / 4)")
 var maxSize = flag.Int("max", 0, "maximum chunk size (default avg * 4)")
-var normalization = flag.Int("normalization", 1, "normalization level: 1, 2, or 3")
-var disableNormalization = flag.Bool("no-normalization", false, "disable normalization (default false)")
+var normalization = flag.Int("normalization", 1, "normalization level: -1 (none), 1, 2, or 3")
 var csv = flag.Bool("csv", false, "output as CSV (default false)")
 
 func main() {
@@ -43,16 +42,11 @@ func run() (err error) {
 		}
 	}()
 
-	normalizationLevel := fastcdc.Normalization(*normalization)
-	if *disableNormalization {
-		normalizationLevel = fastcdc.NormalizationNone
-	}
-
 	chunker, err := fastcdc.New(fastcdc.Config{
 		AverageSize:   *avgSize,
 		MinSize:       *minSize,
 		MaxSize:       *maxSize,
-		Normalization: normalizationLevel,
+		Normalization: fastcdc.Normalization(*normalization),
 	})
 	if err != nil {
 		return err

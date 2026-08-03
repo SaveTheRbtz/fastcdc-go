@@ -130,8 +130,8 @@ fastcdc -file archive.img -avg 1048576
 ```
 
 It prints each chunk's offset and size. Pass `-csv` for CSV output,
-`-normalization` for levels 1 through 3, or `-no-normalization` to disable
-normalization.
+`-normalization=1`, `2`, or `3` to select a level, or `-normalization=-1` to
+disable normalization.
 
 ## Analysis
 

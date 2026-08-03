@@ -29,12 +29,16 @@ jobs:
         run: |
           go generate ./...
           git diff --exit-code
-      - name: Compile tests for linux/386
+      - name: Compile packages for linux/386
         if: matrix.go == 'stable'
         env:
           GOOS: linux
           GOARCH: '386'
-        run: go test -c -o /tmp/fastcdc-go-386.test .
+        run: |
+          go test -c -o /tmp/fastcdc-go-386.test .
+          go test -c -o /tmp/fastcdc-cli-386.test ./cmd/fastcdc
+          go test -c -o /tmp/fastcdc-lab-386.test ./cmd/fastcdc-lab
+          go test -c -o /tmp/fastcdc-gentable-386.test ./internal/gentable
       - name: Upload coverage
         if: matrix.go == 'stable'
         uses: codecov/codecov-action@v6

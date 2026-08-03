@@ -254,6 +254,48 @@ func TestChunksSemantics(t *testing.T) {
 	t.Fatal("boundary input yielded fewer than two chunks")
 }
 
+func TestInsertionDeletionLocality(t *testing.T) {
+	chunker := mustChunker(t, Config{AverageSize: 8 << 10})
+	original := splitMixBytes(1<<20, 0x0123456789abcdef)
+	originalChunks := make(map[string]struct{})
+	for _, chunk := range chunker.Chunks(original) {
+		originalChunks[string(chunk)] = struct{}{}
+	}
+
+	editAt := len(original)/2 + 123
+	insertedBytes := []byte("a small edit in the middle of a file")
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{
+			name: "insertion",
+			data: slices.Concat(original[:editAt], insertedBytes, original[editAt:]),
+		},
+		{
+			name: "deletion",
+			data: slices.Concat(original[:editAt], original[editAt+len(insertedBytes):]),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			reused := 0
+			for _, chunk := range chunker.Chunks(test.data) {
+				if _, ok := originalChunks[string(chunk)]; ok {
+					reused += len(chunk)
+				}
+			}
+			// A local edit should disturb only nearby chunks, not the remaining
+			// half-megabyte suffix.
+			if reused*10 < len(test.data)*9 {
+				t.Fatalf("reused %d of %d bytes (%.2f%%), want at least 90%%",
+					reused, len(test.data), 100*float64(reused)/float64(len(test.data)))
+			}
+		})
+	}
+}
+
 func TestFastCDC2020Vectors(t *testing.T) {
 	// These cut lengths were produced by fastcdc-rs at pinned commit
 	// f76938d8c2d77799852415247c9b3e1fd91b73f3. The even-sized configuration

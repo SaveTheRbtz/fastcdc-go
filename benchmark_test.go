@@ -10,6 +10,71 @@ import (
 
 const benchmarkDataSize = 64 << 20
 
+func BenchmarkPairedVersusScalar(b *testing.B) {
+	textPattern := []byte("The quick brown fox jumps over the lazy dog.\n")
+	chunker := mustChunker(b, Config{AverageSize: 64 << 10})
+	scanners := []struct {
+		name string
+		cut  func([]byte) int
+	}{
+		{name: "paired", cut: chunker.Cut},
+		{name: "scalar", cut: func(data []byte) int { return scalarCut(chunker, data) }},
+	}
+	inputs := []struct {
+		name  string
+		build func() []byte
+	}{
+		{
+			name: "random",
+			build: func() []byte {
+				return splitMixBytes(benchmarkDataSize, 0x0123456789abcdef)
+			},
+		},
+		{
+			name: "text",
+			build: func() []byte {
+				return bytes.Repeat(textPattern, benchmarkDataSize/len(textPattern)+1)[:benchmarkDataSize]
+			},
+		},
+		{
+			name: "zero",
+			build: func() []byte {
+				return make([]byte, benchmarkDataSize)
+			},
+		},
+		{
+			name: "mixed",
+			build: func() []byte {
+				data := splitMixBytes(benchmarkDataSize, 0xfedcba9876543210)
+				for start := 1 << 20; start < len(data); start += 2 << 20 {
+					clear(data[start:min(start+(1<<20), len(data))])
+				}
+				return data
+			},
+		},
+	}
+
+	for _, input := range inputs {
+		data := input.build()
+		for _, scanner := range scanners {
+			b.Run(input.name+"/"+scanner.name, func(b *testing.B) {
+				b.ReportAllocs()
+				b.SetBytes(int64(len(data)))
+				b.ResetTimer()
+				for range b.N {
+					offset := 0
+					for offset < len(data) {
+						offset += scanner.cut(data[offset:])
+					}
+					if offset != len(data) {
+						b.Fatalf("consumed %d bytes, want %d", offset, len(data))
+					}
+				}
+			})
+		}
+	}
+}
+
 func BenchmarkChunks(b *testing.B) {
 	data := splitMixBytes(benchmarkDataSize, 0x0123456789abcdef)
 	for _, average := range []int{8 << 10, 64 << 10, 1 << 20} {
