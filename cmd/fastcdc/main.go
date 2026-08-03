@@ -1,6 +1,8 @@
+// Command fastcdc prints FastCDC chunk offsets and sizes for a file.
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -12,65 +14,83 @@ import (
 const kiB = 1024
 const miB = 1024 * kiB
 
-var defaultOpts = fastcdc.Options{
-	AverageSize: 1 * miB,
-}
-
-var fileName = flag.String("file", "", "input file (required)")
-var avgSize = flag.Int("avg", 1*miB, "average chunk size")
-var minSize = flag.Int("min", 0, "minimum chunk size. (default avg / 4)")
-var maxSize = flag.Int("max", 0, "maximum chunk size (default avg * 4)")
-var normalization = flag.Int("normalization", 0, "normalization level (default 2)")
-var disableNormalization = flag.Bool("no-normalization", false, "disable normalization (default false)")
-var csv = flag.Bool("csv", false, "output as CSV (default false)")
+var errInvalidFlags = errors.New("invalid flags")
 
 func main() {
-	flag.Parse()
+	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
+		switch {
+		case errors.Is(err, flag.ErrHelp):
+			return
+		case errors.Is(err, errInvalidFlags):
+			os.Exit(2)
+		}
+		_, _ = fmt.Fprintln(os.Stderr, "fastcdc:", err)
+		os.Exit(1)
+	}
+}
+
+func run(args []string, stdout, stderr io.Writer) (err error) {
+	fs := flag.NewFlagSet("fastcdc", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fileName := fs.String("file", "", "input file (required)")
+	avgSize := fs.Int("avg", 1*miB, "average chunk size")
+	minSize := fs.Int("min", 0, "minimum chunk size (default avg / 4)")
+	maxSize := fs.Int("max", 0, "maximum chunk size (default avg * 4)")
+	normalization := fs.Int("normalization", 1, "normalization level: -1 (none), 1, 2, or 3")
+	csvOutput := fs.Bool("csv", false, "output as CSV (default false)")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return flag.ErrHelp
+		}
+		return fmt.Errorf("%w: %v", errInvalidFlags, err)
+	}
 	if *fileName == "" {
-		fatalf("flag -file is required")
+		return fmt.Errorf("flag -file is required")
 	}
 	f, err := os.Open(*fileName)
 	if err != nil {
-		fatalf("unable to open file: %v", err)
+		return fmt.Errorf("open %q: %w", *fileName, err)
 	}
+	defer func() {
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+	}()
 
-	chunker, err := fastcdc.NewChunker(f, fastcdc.Options{
-		AverageSize:          *avgSize,
-		MinSize:              *minSize,
-		MaxSize:              *maxSize,
-		Normalization:        *normalization,
-		DisableNormalization: *disableNormalization,
+	chunker, err := fastcdc.New(fastcdc.Config{
+		AverageSize:   *avgSize,
+		MinSize:       *minSize,
+		MaxSize:       *maxSize,
+		Normalization: fastcdc.Normalization(*normalization),
 	})
 	if err != nil {
-		fatalf("%v", err)
+		return err
 	}
+	reader := chunker.NewReader(f)
 
-	if *csv {
-		fmt.Printf("%s,%s\n", "Offset", "Size")
-	} else {
-		fmt.Printf("%9s  %9s\n", "OFFSET", "SIZE")
+	headerFormat := "%9s  %9s\n"
+	rowFormat := "%9d  %9d\n"
+	offsetHeader, sizeHeader := "OFFSET", "SIZE"
+	if *csvOutput {
+		headerFormat = "%s,%s\n"
+		rowFormat = "%d,%d\n"
+		offsetHeader, sizeHeader = "Offset", "Size"
+	}
+	if _, err := fmt.Fprintf(stdout, headerFormat, offsetHeader, sizeHeader); err != nil {
+		return fmt.Errorf("write output: %w", err)
 	}
 
 	for {
-		chunk, err := chunker.Next()
+		offset := reader.InputOffset()
+		chunk, err := reader.Next()
 		if err == io.EOF {
-			break
+			return nil
 		}
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
-			os.Exit(1)
+			return err
 		}
-		if *csv {
-			fmt.Printf("%d,%d\n", chunk.Offset, chunk.Length)
-		} else {
-			fmt.Printf("%9d  %9d\n", chunk.Offset, chunk.Length)
+		if _, err := fmt.Fprintf(stdout, rowFormat, offset, len(chunk)); err != nil {
+			return fmt.Errorf("write output: %w", err)
 		}
 	}
-
-}
-
-func fatalf(format string, a ...interface{}) {
-	format = fmt.Sprintf("ERROR: %s\n", format)
-	fmt.Fprintf(os.Stderr, format, a...)
-	os.Exit(1)
 }

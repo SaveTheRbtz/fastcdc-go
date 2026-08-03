@@ -2,52 +2,54 @@ package fastcdc_test
 
 import (
 	"bytes"
-	"crypto/md5"
 	"fmt"
 	"io"
-	"log"
-	"math/rand"
 
-	"github.com/SaveTheRbtz/fastcdc-go"
+	fastcdc "github.com/SaveTheRbtz/fastcdc-go"
 )
 
-func Example_basic() {
-
-	data := make([]byte, 10*1024*1024)
-	rand.Seed(4542)
-	rand.Read(data)
-	rd := bytes.NewReader(data)
-
-	chunker, err := fastcdc.NewChunker(rd, fastcdc.Options{
-		AverageSize: 1024 * 1024, // target 1 MiB average chunk size
-	})
+func ExampleChunker_Chunks() {
+	chunker, err := fastcdc.New(fastcdc.Config{AverageSize: 256})
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 
-	fmt.Printf("%-32s  %s\n", "CHECKSUM", "CHUNK SIZE")
+	data := bytes.Repeat([]byte("content-defined storage\n"), 100)
+	var saved [][]byte
+	for _, chunk := range chunker.Chunks(data) {
+		saved = append(saved, bytes.Clone(chunk))
+	}
+	fmt.Println(len(saved) > 1, bytes.Equal(bytes.Join(saved, nil), data))
 
+	// Output:
+	// true true
+}
+
+func ExampleReader() {
+	chunker, err := fastcdc.New(fastcdc.Config{AverageSize: 256})
+	if err != nil {
+		panic(err)
+	}
+
+	data := bytes.Repeat([]byte("streamed input remains in order\n"), 100)
+	reader := chunker.NewReader(bytes.NewReader(data))
+	var restored bytes.Buffer
 	for {
-		chunk, err := chunker.Next()
+		offset := reader.InputOffset()
+		chunk, err := reader.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			log.Fatal(err)
+			panic(err)
 		}
-
-		fmt.Printf("%x  %d\n", md5.Sum(chunk.Data), chunk.Length)
+		if offset != int64(restored.Len()) {
+			panic("non-contiguous chunk")
+		}
+		restored.Write(chunk)
 	}
+	fmt.Println(bytes.Equal(restored.Bytes(), data))
 
 	// Output:
-	// CHECKSUM                          CHUNK SIZE
-	// dee6e6c5cff96b97879c8ccc3a0816c4  1073134
-	// febbb26d9293e4f7bbbd2690a2689bb0  1475338
-	// f749cff5958a66592ae9a5e1040da2e0  733274
-	// 1a111ef81439612d5ea511012fc53a99  1431958
-	// 7d37d2aec1ce28f52a09a74c3a6afb3c  1108001
-	// 045020dd21550af5c3494aab873b865e  901625
-	// ed746b6c49369f31db6fe01f783abbbc  1433591
-	// 666bdd16f26cc78fe682a124be777161  1230739
-	// 044df6a4f25c7817f420e12939db71cf  1098100
+	// true
 }
