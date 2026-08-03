@@ -4,9 +4,9 @@ if (ARGC != 2) {
 }
 
 set datafile separator comma
-set terminal svg size 960,520 dynamic enhanced font "sans,11"
+set terminal svg size 960,520 dynamic enhanced font "sans,11" background rgb "white"
 set output ARG2
-set title "FastCDC chunk-size distribution"
+set title sprintf("FastCDC chunk-size distribution (%s)", ARG1)
 set xlabel "chunk size (bytes)"
 set ylabel "probability"
 set key top right

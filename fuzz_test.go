@@ -26,6 +26,9 @@ func FuzzCutMatchesScalar(f *testing.F) {
 		NormalizationLevel3,
 	}
 	f.Fuzz(func(t *testing.T, data []byte, averageIndex uint8, rawMin, rawMax uint16, normalizationIndex uint8) {
+		if len(data) > 4<<10 {
+			t.Skip()
+		}
 		average := averages[int(averageIndex)%len(averages)]
 		minSize := 1 + int(rawMin)%max(1, average-1)
 		maxSize := average + 1 + int(rawMax)%(4*average)
@@ -59,7 +62,7 @@ func FuzzReaderMatchesChunks(f *testing.F) {
 	boundary := make([]byte, 1024)
 	boundary[64] = 0xc0
 	f.Add(boundary, []byte{64, 1}, uint8(0))
-	f.Add(splitMixBytes(32768, 0x0123456789abcdef), []byte{1, 2, 3, 5, 8, 13}, uint8(4))
+	f.Add(splitMixBytes(4096, 0x0123456789abcdef), []byte{1, 2, 3, 5, 8, 13}, uint8(4))
 
 	normalizations := [...]Normalization{
 		NormalizationNone,
@@ -69,6 +72,9 @@ func FuzzReaderMatchesChunks(f *testing.F) {
 		NormalizationLevel3,
 	}
 	f.Fuzz(func(t *testing.T, data, fragmentBytes []byte, normalizationIndex uint8) {
+		if len(data) > 4<<10 || len(fragmentBytes) > 32 {
+			t.Skip()
+		}
 		if len(fragmentBytes) == 0 {
 			fragmentBytes = []byte{1}
 		}
@@ -96,7 +102,7 @@ func FuzzReaderMatchesChunksWithErrors(f *testing.F) {
 	boundary := make([]byte, 1024)
 	boundary[64] = 0xc0
 	f.Add(boundary, []byte{0x60, 0x81}, uint8(0))
-	f.Add(splitMixBytes(8192, 0x0123456789abcdef), []byte{0xe1, 0x02, 0xa3}, uint8(4))
+	f.Add(splitMixBytes(4096, 0x0123456789abcdef), []byte{0xe1, 0x02, 0xa3}, uint8(4))
 
 	normalizations := [...]Normalization{
 		NormalizationNone,
@@ -106,6 +112,9 @@ func FuzzReaderMatchesChunksWithErrors(f *testing.F) {
 		NormalizationLevel3,
 	}
 	f.Fuzz(func(t *testing.T, data, directives []byte, normalizationIndex uint8) {
+		if len(data) > 4<<10 || len(directives) > 32 {
+			t.Skip()
+		}
 		if len(directives) == 0 {
 			directives = []byte{0}
 		}

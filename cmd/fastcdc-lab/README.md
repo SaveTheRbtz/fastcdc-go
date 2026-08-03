@@ -9,34 +9,6 @@ format is average 8 KiB, minimum 2 KiB, maximum 32 KiB, normalization level 1.
 Every subcommand also accepts `-average`, `-min`, `-max`, and
 `-normalization`.
 
-## Throughput
-
-Run three race-instrumented passes over 1 GiB of deterministic data:
-
-```sh
-go run -race ./cmd/fastcdc-lab bench \
-  -bytes 1GiB -corpus 64MiB -rounds 3 -seed 1 \
-  > results/benchmark.csv
-```
-
-The corpus is generated before timing and repeated without allocating the full
-logical input. Timing includes the `Reader`, source copying, and a small
-rolling checksum of chunk lengths. The checksum and chunk count must match
-across rounds. Results produced with `-race` measure the instrumented build,
-not production throughput.
-
-File mode reopens the file for each measured round:
-
-```sh
-go run -race ./cmd/fastcdc-lab bench \
-  -file /path/to/large.pack -rounds 3 \
-  > results/file-benchmark.csv
-```
-
-Before timing, file mode compares a direct SHA-256 pass with a second pass over
-the bytes returned by FastCDC. It verifies the file digest again after the
-timed rounds. The measured rounds therefore describe a warm-cache workload.
-
 ## Chunk-size distribution
 
 Write observed histogram bins and the independent-uniform-hash model:

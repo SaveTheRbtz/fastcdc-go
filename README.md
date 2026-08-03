@@ -129,6 +129,22 @@ It prints each chunk's offset and size. Pass `-csv` for CSV output,
 `-normalization` for levels 1 through 3, or `-no-normalization` to disable
 normalization.
 
+## Analysis
+
+The [reproducible analysis](analysis/README.md) records deterministic
+chunk-size distributions, Linux source-history dedup ratios at two chunk
+sizes, and an exact source-boundary oracle comparison. The supporting command
+emits canonical CSV; plots are generated separately with the checked-in
+gnuplot script.
+
+| No normalization | Level 1 |
+| --- | --- |
+| [![No-normalization distribution](analysis/distribution-64k-none.svg)](analysis/distribution-64k-none.svg) | [![Level-1 distribution](analysis/distribution-64k-n1.svg)](analysis/distribution-64k-n1.svg) |
+
+| Level 2 | Level 3 |
+| --- | --- |
+| [![Level-2 distribution](analysis/distribution-64k-n2.svg)](analysis/distribution-64k-n2.svg) | [![Level-3 distribution](analysis/distribution-64k-n3.svg)](analysis/distribution-64k-n3.svg) |
+
 ## Compatibility
 
 This version implements the 2020 algorithm and its canonical Gear table. It
