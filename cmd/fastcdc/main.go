@@ -12,38 +12,50 @@ import (
 const kiB = 1024
 const miB = 1024 * kiB
 
-var defaultOpts = fastcdc.Options{
-	AverageSize: 1 * miB,
-}
-
 var fileName = flag.String("file", "", "input file (required)")
 var avgSize = flag.Int("avg", 1*miB, "average chunk size")
 var minSize = flag.Int("min", 0, "minimum chunk size. (default avg / 4)")
 var maxSize = flag.Int("max", 0, "maximum chunk size (default avg * 4)")
-var normalization = flag.Int("normalization", 0, "normalization level (default 2)")
+var normalization = flag.Int("normalization", 1, "normalization level: 1, 2, or 3")
 var disableNormalization = flag.Bool("no-normalization", false, "disable normalization (default false)")
 var csv = flag.Bool("csv", false, "output as CSV (default false)")
 
 func main() {
 	flag.Parse()
+	if err := run(); err != nil {
+		fatalf("%v", err)
+	}
+}
+
+func run() (err error) {
 	if *fileName == "" {
-		fatalf("flag -file is required")
+		return fmt.Errorf("flag -file is required")
 	}
 	f, err := os.Open(*fileName)
 	if err != nil {
-		fatalf("unable to open file: %v", err)
+		return fmt.Errorf("open %q: %w", *fileName, err)
+	}
+	defer func() {
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+	}()
+
+	normalizationLevel := fastcdc.Normalization(*normalization)
+	if *disableNormalization {
+		normalizationLevel = fastcdc.NormalizationNone
 	}
 
-	chunker, err := fastcdc.NewChunker(f, fastcdc.Options{
-		AverageSize:          *avgSize,
-		MinSize:              *minSize,
-		MaxSize:              *maxSize,
-		Normalization:        *normalization,
-		DisableNormalization: *disableNormalization,
+	chunker, err := fastcdc.New(fastcdc.Config{
+		AverageSize:   *avgSize,
+		MinSize:       *minSize,
+		MaxSize:       *maxSize,
+		Normalization: normalizationLevel,
 	})
 	if err != nil {
-		fatalf("%v", err)
+		return err
 	}
+	reader := chunker.NewReader(f)
 
 	if *csv {
 		fmt.Printf("%s,%s\n", "Offset", "Size")
@@ -52,21 +64,20 @@ func main() {
 	}
 
 	for {
-		chunk, err := chunker.Next()
+		offset := reader.InputOffset()
+		chunk, err := reader.Next()
 		if err == io.EOF {
-			break
+			return nil
 		}
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
-			os.Exit(1)
+			return err
 		}
 		if *csv {
-			fmt.Printf("%d,%d\n", chunk.Offset, chunk.Length)
+			fmt.Printf("%d,%d\n", offset, len(chunk))
 		} else {
-			fmt.Printf("%9d  %9d\n", chunk.Offset, chunk.Length)
+			fmt.Printf("%9d  %9d\n", offset, len(chunk))
 		}
 	}
-
 }
 
 func fatalf(format string, a ...interface{}) {
