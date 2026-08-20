@@ -98,13 +98,15 @@ its chunk buffer, discards buffered input and the terminal error, and sets
 | `MinSize` | Positive and less than `AverageSize`; default `AverageSize / 4` |
 | `MaxSize` | Greater than `AverageSize` and at most 16 MiB; default `AverageSize * 4` |
 | `Normalization` | Default `NormalizationLevel1` |
+| `Masks` | Three boundary masks; zero value selects `MasksDefault` |
+| `GearTable` | Fixed 256-entry lookup table; zero value selects `GearTableDefault` |
 
 `AverageSize` selects the target scale; it does not guarantee the arithmetic
 mean of produced chunks. The observed mean also depends on normalization and
 input data.
 
-Normalization changes the boundary mask below and above the requested average
-so chunk sizes cluster more tightly around it:
+With derived masks, normalization changes the boundary mask below and above the
+requested average so chunk sizes cluster more tightly around it:
 
 | Value | Behavior |
 | --- | --- |
@@ -114,11 +116,30 @@ so chunk sizes cluster more tightly around it:
 | `NormalizationLevel3` | Narrowest size distribution |
 
 Higher levels trade a tighter distribution for different chunk boundaries.
-All configuration fields are part of the chunking format: use the same values
-where identical boundaries are required.
+With custom masks, levels 1 through 3 all use `Small` and `Large`; only
+`NormalizationNone`, which uses `Average`, is distinct.
 
 A `Chunker` contains only validated, immutable state. Share it freely between
 goroutines, and create a separate `Reader` for each stream.
+
+## Compatibility profiles
+
+`CConfig` returns the complete configuration for the scalar normalized 64-bit
+routine in the FastCDC authors' C implementation:
+
+```go
+chunker, err := fastcdc.New(fastcdc.CConfig())
+```
+
+The root package also provides `GearTableDefault`, `GearTableC`,
+`MasksDefault`, and `MasksC` for constructing custom configurations. Their
+GoDoc records the source implementations and compatibility constraints.
+
+Gear values, masks, sizes, normalization, rolling-hash semantics, and boundary
+conventions are all part of a chunking format. Other FastCDC implementations
+may differ in any of them, so copying only a table or mask does not establish
+compatibility. Custom values are not statistically validated; poor values can
+produce poor chunk-size distributions.
 
 ## Performance
 
@@ -193,9 +214,10 @@ gnuplot script.
 
 ## Compatibility
 
-This version implements the 2020 algorithm and its canonical Gear table. It
-does not preserve the API or chunk boundaries of earlier `fastcdc-go`
-releases.
+With `Masks` and `GearTable` left zero, `New` preserves v0.4.0 chunk
+boundaries. These fields are additional parts of the chunking format. This
+version does not preserve the API or chunk boundaries of releases before
+v0.4.0.
 
 ## References
 

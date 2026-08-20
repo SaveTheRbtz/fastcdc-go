@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"iter"
-	"math/bits"
 )
 
 //go:generate go run ./internal/gentable
@@ -15,31 +14,20 @@ const (
 	maxChunkSize   = 16 << 20
 )
 
-// masks is the distributed mask table used by fastcdc-rs v2020. Indexes are
-// target-size bit counts; indexes 0 through 4 are unused.
-var masks = [...]uint64{
-	0, 0, 0, 0,
-	0, 0x0000000001804110, 0x0000000001803110, 0x0000000018035100,
-	0x0000001800035300, 0x0000019000353000, 0x0000590003530000, 0x0000d90003530000,
-	0x0000d90103530000, 0x0000d90303530000, 0x0000d90313530000, 0x0000d90f03530000,
-	0x0000d90303537000, 0x0000d90703537000, 0x0000d90707537000, 0x0000d91707537000,
-	0x0000d91747537000, 0x0000d91767537000, 0x0000d93767537000, 0x0000d93777537000,
-	0x0000d93777577000, 0x0000db3777577000,
-}
-
 // Normalization controls how tightly chunk sizes cluster around
-// Config.AverageSize.
+// Config.AverageSize when [Config.Masks] is zero. With custom masks, it selects
+// only between disabled and enabled normalization.
 type Normalization int
 
 const (
 	// NormalizationNone disables chunk-size normalization.
 	NormalizationNone Normalization = -1
-	// NormalizationLevel1 is the default and produces a moderately narrow
-	// distribution of chunk sizes.
+	// NormalizationLevel1 is the default and, with derived masks, produces a
+	// moderately narrow distribution of chunk sizes.
 	NormalizationLevel1 Normalization = 1
-	// NormalizationLevel2 produces a narrower distribution than level 1.
+	// NormalizationLevel2 derives a narrower distribution than level 1.
 	NormalizationLevel2 Normalization = 2
-	// NormalizationLevel3 produces the narrowest distribution.
+	// NormalizationLevel3 derives the narrowest distribution.
 	NormalizationLevel3 Normalization = 3
 )
 
@@ -64,6 +52,16 @@ type Config struct {
 	// Normalization selects one of NormalizationNone or NormalizationLevel1
 	// through NormalizationLevel3. Zero selects NormalizationLevel1.
 	Normalization Normalization
+
+	// Masks selects the boundary masks. The zero value derives the masks
+	// returned by MasksDefault from AverageSize and Normalization. With custom
+	// masks, NormalizationNone uses Average; enabled normalization uses Small
+	// before AverageSize and Large afterward.
+	Masks Masks
+
+	// GearTable selects the lookup values used by the Gear rolling hash. The
+	// zero value selects the table returned by GearTableDefault.
+	GearTable [256]uint64
 }
 
 // Chunker defines a validated, immutable chunking format. Its methods are safe
@@ -74,16 +72,14 @@ type Chunker struct {
 	maxSize     int
 	maskSmall   uint64
 	maskLarge   uint64
+	gearTable   [256]uint64
 }
 
 // New returns a Chunker for config. It returns an error if config violates any
 // of the documented size or normalization rules.
 func New(config Config) (*Chunker, error) {
-	if config.AverageSize < minAverageSize || config.AverageSize > maxAverageSize {
-		return nil, fmt.Errorf("fastcdc: average size must be between 256 B and 4 MiB")
-	}
-	if config.AverageSize&(config.AverageSize-1) != 0 {
-		return nil, fmt.Errorf("fastcdc: average size must be a power of two")
+	if err := validateAverageSize(config.AverageSize); err != nil {
+		return nil, err
 	}
 
 	minSize := config.MinSize
@@ -108,19 +104,29 @@ func New(config Config) (*Chunker, error) {
 	if err != nil {
 		return nil, err
 	}
-	averageBits := bits.Len(uint(config.AverageSize)) - 1
-	smallIndex := averageBits + normalization
-	largeIndex := averageBits - normalization
-	if smallIndex >= len(masks) || largeIndex < 0 {
-		return nil, fmt.Errorf("fastcdc: normalization is unsupported for average size")
+	maskSet := config.Masks
+	if maskSet == (Masks{}) {
+		maskSet, err = deriveDefaultMasks(config.AverageSize, normalization)
+		if err != nil {
+			return nil, err
+		}
+	}
+	maskSmall, maskLarge := maskSet.Small, maskSet.Large
+	if normalization == 0 {
+		maskSmall, maskLarge = maskSet.Average, maskSet.Average
+	}
+	gearTable := config.GearTable
+	if gearTable == ([256]uint64{}) {
+		gearTable = GearTableDefault()
 	}
 
 	return &Chunker{
 		minSize:     minSize,
 		averageSize: config.AverageSize,
 		maxSize:     maxSize,
-		maskSmall:   masks[smallIndex],
-		maskLarge:   masks[largeIndex],
+		maskSmall:   maskSmall,
+		maskLarge:   maskLarge,
+		gearTable:   gearTable,
 	}, nil
 }
 
@@ -211,7 +217,7 @@ func (c *Chunker) scan(data []byte, end int, state *scanState) int {
 	center := min(c.averageSize, end)
 	if state.position < center {
 		start := state.position
-		cut, hash := scanPhase(data[start:center], state.hash, c.maskSmall)
+		cut, hash := c.scanPhase(data[start:center], state.hash, c.maskSmall)
 		state.hash = hash
 		if cut >= 0 {
 			return start + cut
@@ -220,7 +226,7 @@ func (c *Chunker) scan(data []byte, end int, state *scanState) int {
 	}
 	if state.position < end {
 		start := state.position
-		cut, hash := scanPhase(data[start:end], state.hash, c.maskLarge)
+		cut, hash := c.scanPhase(data[start:end], state.hash, c.maskLarge)
 		state.hash = hash
 		if cut >= 0 {
 			return start + cut
@@ -232,16 +238,16 @@ func (c *Chunker) scan(data []byte, end int, state *scanState) int {
 
 // scanPhase preloads seven independent Gear values before applying the ordered
 // hash steps. The short tail leaves hash resumable across input fragments.
-func scanPhase(data []byte, hash, mask uint64) (int, uint64) {
+func (c *Chunker) scanPhase(data []byte, hash, mask uint64) (int, uint64) {
 	i := 0
 	for ; i < len(data)-6; i += 7 {
-		first := gear[data[i]]
-		second := gear[data[i+1]]
-		third := gear[data[i+2]]
-		fourth := gear[data[i+3]]
-		fifth := gear[data[i+4]]
-		sixth := gear[data[i+5]]
-		seventh := gear[data[i+6]]
+		first := c.gearTable[data[i]]
+		second := c.gearTable[data[i+1]]
+		third := c.gearTable[data[i+2]]
+		fourth := c.gearTable[data[i+3]]
+		fifth := c.gearTable[data[i+4]]
+		sixth := c.gearTable[data[i+5]]
+		seventh := c.gearTable[data[i+6]]
 
 		hash = (hash << 1) + first
 		if hash&mask == 0 {
@@ -273,7 +279,7 @@ func scanPhase(data []byte, hash, mask uint64) (int, uint64) {
 		}
 	}
 	for ; i < len(data); i++ {
-		hash = (hash << 1) + gear[data[i]]
+		hash = (hash << 1) + c.gearTable[data[i]]
 		if hash&mask == 0 {
 			return i, hash
 		}

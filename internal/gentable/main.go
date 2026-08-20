@@ -1,4 +1,4 @@
-// Command gentable generates the canonical FastCDC Gear tables.
+// Command gentable generates the default FastCDC 2020 Gear table.
 package main
 
 import (
@@ -37,7 +37,7 @@ func main() {
 }
 
 func writeTable(out *bytes.Buffer, table [256]uint64) {
-	fmt.Fprintln(out, "\nvar gear = [256]uint64{")
+	fmt.Fprintln(out, "\nvar gearTableFastCDC2020 = [256]uint64{")
 	for i, value := range table {
 		fmt.Fprintf(out, "0x%016x,", value)
 		if i%4 == 3 {
