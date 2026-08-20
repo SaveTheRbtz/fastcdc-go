@@ -16,8 +16,9 @@ func TestNewDerivesConfig(t *testing.T) {
 	}
 	minimumAverage := derivedConfig{
 		minimum: 64, average: 256, maximum: 1024,
-		maskSmall: masks[9], maskLarge: masks[7],
+		maskSmall: maskTableDefault[9], maskLarge: maskTableDefault[7],
 	}
+	customMasks := Masks{Small: 1, Average: 2, Large: 4}
 	tests := []struct {
 		name   string
 		config Config
@@ -38,7 +39,7 @@ func TestNewDerivesConfig(t *testing.T) {
 			config: Config{AverageSize: 8192, Normalization: NormalizationNone},
 			want: derivedConfig{
 				minimum: 2048, average: 8192, maximum: 32768,
-				maskSmall: masks[13], maskLarge: masks[13],
+				maskSmall: maskTableDefault[13], maskLarge: maskTableDefault[13],
 			},
 		},
 		{
@@ -46,7 +47,7 @@ func TestNewDerivesConfig(t *testing.T) {
 			config: Config{AverageSize: 8192, Normalization: NormalizationLevel2},
 			want: derivedConfig{
 				minimum: 2048, average: 8192, maximum: 32768,
-				maskSmall: masks[15], maskLarge: masks[11],
+				maskSmall: maskTableDefault[15], maskLarge: maskTableDefault[11],
 			},
 		},
 		{
@@ -54,7 +55,7 @@ func TestNewDerivesConfig(t *testing.T) {
 			config: Config{AverageSize: 4 << 20, Normalization: NormalizationLevel3},
 			want: derivedConfig{
 				minimum: 1 << 20, average: 4 << 20, maximum: 16 << 20,
-				maskSmall: masks[25], maskLarge: masks[19],
+				maskSmall: maskTableDefault[25], maskLarge: maskTableDefault[19],
 			},
 		},
 		{
@@ -67,7 +68,25 @@ func TestNewDerivesConfig(t *testing.T) {
 			},
 			want: derivedConfig{
 				minimum: 65, average: 512, maximum: 1025,
-				maskSmall: masks[9], maskLarge: masks[9],
+				maskSmall: maskTableDefault[9], maskLarge: maskTableDefault[9],
+			},
+		},
+		{
+			name:   "custom masks",
+			config: Config{AverageSize: 256, Masks: customMasks},
+			want: derivedConfig{
+				minimum: 64, average: 256, maximum: 1024,
+				maskSmall: customMasks.Small, maskLarge: customMasks.Large,
+			},
+		},
+		{
+			name: "custom masks without normalization",
+			config: Config{
+				AverageSize: 256, Normalization: NormalizationNone, Masks: customMasks,
+			},
+			want: derivedConfig{
+				minimum: 64, average: 256, maximum: 1024,
+				maskSmall: customMasks.Average, maskLarge: customMasks.Average,
 			},
 		},
 	}
@@ -83,6 +102,21 @@ func TestNewDerivesConfig(t *testing.T) {
 				t.Errorf("New(%#v) = %#v, want %#v", test.config, got, test.want)
 			}
 		})
+	}
+}
+
+func TestMasksDefault(t *testing.T) {
+	got, err := MasksDefault(8192, NormalizationLevel2)
+	if err != nil {
+		t.Fatalf("MasksDefault: %v", err)
+	}
+	want := Masks{
+		Small:   maskTableDefault[15],
+		Average: maskTableDefault[13],
+		Large:   maskTableDefault[11],
+	}
+	if got != want {
+		t.Errorf("MasksDefault = %#v, want %#v", got, want)
 	}
 }
 
@@ -328,6 +362,35 @@ func TestFastCDC2020Vectors(t *testing.T) {
 	}
 }
 
+func TestFastCDCCVectors(t *testing.T) {
+	// These cut lengths were produced by normalized_chunking_64 from
+	// wxiacode/FastCDC-c at pinned commit
+	// 7d661508aeef2d9be3c7fc6e4b94325ef90205c5.
+	data := splitMixBytes(65536, 0x0123456789abcdef)
+	digest := sha256.Sum256(data)
+	if got := hex.EncodeToString(digest[:]); got != "c61de5af9b5adc202b7ebe80545d9c10f95d29b4535e5d87a0ef23fffe5ccba6" {
+		t.Fatalf("generated corpus SHA-256 = %s", got)
+	}
+	config := CConfig()
+	parameters := [4]int{config.MinSize, config.AverageSize, config.MaxSize, int(config.Normalization)}
+	if want := [4]int{6144, 8192, 32768, 2}; parameters != want {
+		t.Fatalf("CConfig parameters = %v, want %v", parameters, want)
+	}
+	wantMasks := Masks{
+		Small:   0x0000d9f003530000,
+		Average: 0x0000d93003530000,
+		Large:   0x0000d90003530000,
+	}
+	if MasksC() != wantMasks || config.Masks != wantMasks || config.GearTable != GearTableC() {
+		t.Fatal("CConfig does not contain the C masks and Gear table")
+	}
+	chunker := mustChunker(t, config)
+	want := []int{10343, 9823, 7155, 7207, 10081, 8514, 8413, 4000}
+	if got := cutLengths(chunker, data); !slices.Equal(got, want) {
+		t.Errorf("chunk lengths:\n got %v\nwant %v", got, want)
+	}
+}
+
 func TestScanMatchesScalar(t *testing.T) {
 	configs := []Config{
 		{AverageSize: 256},
@@ -338,6 +401,7 @@ func TestScanMatchesScalar(t *testing.T) {
 		{MinSize: 65, AverageSize: 512, MaxSize: 1025, Normalization: NormalizationNone},
 		{MinSize: 257, AverageSize: 1024, MaxSize: 4093},
 		{MinSize: 2049, AverageSize: 8192, MaxSize: 32767, Normalization: NormalizationLevel3},
+		CConfig(),
 	}
 
 	for i, config := range configs {
@@ -422,20 +486,27 @@ func TestOddBoundRegressions(t *testing.T) {
 	})
 }
 
-func TestCanonicalTables(t *testing.T) {
+func TestBuiltInTableFingerprints(t *testing.T) {
+	defaultGear := GearTableDefault()
+	cGear := GearTableC()
 	digests := []struct {
 		name  string
 		table []uint64
 		want  string
 	}{
 		{
-			name:  "Gear",
-			table: gear[:],
+			name:  "default Gear",
+			table: defaultGear[:],
 			want:  "9df0a720752a7d211fdebaf39bed01610983756fc340a1cfef41052b7356ae73",
 		},
 		{
-			name:  "masks",
-			table: masks[:],
+			name:  "C Gear",
+			table: cGear[:],
+			want:  "91894b7a3ce87fd7cb159a0d7f6c8af3e1eda60f88cb7ab5bbfc9a4dc35b7403",
+		},
+		{
+			name:  "default mask table",
+			table: maskTableDefault[:],
 			want:  "36cda7e03f84a23298e2f56d0a6a5c9064e8a9f71c4ed07c39b754496f8c720b",
 		},
 	}
@@ -478,13 +549,13 @@ func scalarCut(chunker *Chunker, data []byte) int {
 	var hash uint64
 	i := chunker.minSize
 	for ; i < center; i++ {
-		hash = (hash << 1) + gear[data[i]]
+		hash = (hash << 1) + chunker.gearTable[data[i]]
 		if hash&chunker.maskSmall == 0 {
 			return i
 		}
 	}
 	for ; i < end; i++ {
-		hash = (hash << 1) + gear[data[i]]
+		hash = (hash << 1) + chunker.gearTable[data[i]]
 		if hash&chunker.maskLarge == 0 {
 			return i
 		}
