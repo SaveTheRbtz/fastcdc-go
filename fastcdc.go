@@ -239,15 +239,16 @@ func (c *Chunker) scan(data []byte, end int, state *scanState) int {
 // scanPhase preloads seven independent Gear values before applying the ordered
 // hash steps. The short tail leaves hash resumable across input fragments.
 func (c *Chunker) scanPhase(data []byte, hash, mask uint64) (int, uint64) {
+	gear := &c.gearTable
 	i := 0
 	for ; i < len(data)-6; i += 7 {
-		first := c.gearTable[data[i]]
-		second := c.gearTable[data[i+1]]
-		third := c.gearTable[data[i+2]]
-		fourth := c.gearTable[data[i+3]]
-		fifth := c.gearTable[data[i+4]]
-		sixth := c.gearTable[data[i+5]]
-		seventh := c.gearTable[data[i+6]]
+		first := gear[data[i]]
+		second := gear[data[i+1]]
+		third := gear[data[i+2]]
+		fourth := gear[data[i+3]]
+		fifth := gear[data[i+4]]
+		sixth := gear[data[i+5]]
+		seventh := gear[data[i+6]]
 
 		hash = (hash << 1) + first
 		if hash&mask == 0 {
@@ -279,7 +280,7 @@ func (c *Chunker) scanPhase(data []byte, hash, mask uint64) (int, uint64) {
 		}
 	}
 	for ; i < len(data); i++ {
-		hash = (hash << 1) + c.gearTable[data[i]]
+		hash = (hash << 1) + gear[data[i]]
 		if hash&mask == 0 {
 			return i, hash
 		}
